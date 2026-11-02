@@ -11,11 +11,16 @@ gir1.2-handy-1, gir1.2-webkit2-4.1, python3-markdown-it, python3-pygments.
 """
 
 import html
+import http.client
 import json
 import os
 import re
+import socket
+import ssl
 import sys
 import tempfile
+import threading
+import urllib.parse
 
 import gi
 
@@ -34,9 +39,49 @@ from pygments.util import ClassNotFound
 
 APP_ID = "io.github.markdownstudio.MarkdownStudio"
 APP_NAME = "Markdown Studio"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "markdown-studio.svg")
+
+# LanguageTool provides free spelling and grammar checks. QuillBot does not
+# offer a public API without a paid account, so LanguageTool is the default.
+GRAMMAR_URL = os.environ.get(
+    "MARKDOWN_STUDIO_GRAMMAR_URL", "https://api.languagetool.org/v2/check"
+)
+GRAMMAR_LANGUAGE = os.environ.get("MARKDOWN_STUDIO_GRAMMAR_LANGUAGE", "en-US")
+GRAMMAR_MAX_CHARS = 19000
+
+
+class _IPv4HTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that skips unreachable IPv6 addresses (fast fallback)."""
+
+    def connect(self):
+        try:
+            infos = socket.getaddrinfo(
+                self.host, self.port, socket.AF_INET, socket.SOCK_STREAM
+            )
+        except socket.gaierror:
+            return super().connect()
+        last_error = None
+        for family, socktype, proto, _canon, address in infos:
+            sock = socket.socket(family, socktype, proto)
+            sock.settimeout(self.timeout)
+            try:
+                sock.connect(address)
+            except OSError as error:
+                last_error = error
+                sock.close()
+                continue
+            self.sock = sock
+            return
+        raise last_error or OSError("Could not connect to %s" % self.host)
+
+
+class _IPv4HTTPSConnection(_IPv4HTTPConnection, http.client.HTTPSConnection):
+    def connect(self):
+        super().connect()
+        context = self._context or ssl.create_default_context()
+        self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
 
 WELCOME = """# Welcome to Markdown Studio
 
@@ -46,7 +91,12 @@ A quiet place to write Markdown, with a live preview that updates as you type.
 
 - Write on the left, watch the result on the right.
 - Use the **toolbar** above the editor, or the keyboard shortcuts, to format.
-- Press **Ctrl+S** to save and **Ctrl+O** to open a file.
+- Press **Ctrl+S** to save and **Ctrl+O** to open a file. Open several files
+  at once and switch between them with the tabs at the top.
+- Press **Ctrl+N** for a new tab, **Ctrl+W** to close one, and **Ctrl+Tab**
+  to move between tabs.
+- Files with a name are saved automatically as you type.
+- Use **Tools → Check Spelling & Grammar** for a spelling and grammar review.
 - Drag a `.md` file onto the window to open it.
 
 > Good writing is clear thinking made visible.
@@ -303,6 +353,59 @@ def build_export_html(title, text):
 # ------------------------------------------------------------------- gtk -----
 
 APP_CSS = b"""
+.tabstrip {
+  background: @theme_bg_color;
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
+}
+.tabbar .tab {
+  min-height: 30px;
+  margin: 0 2px;
+  padding: 0 1px;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid alpha(@theme_fg_color, 0.10);
+  border-bottom: none;
+  background: alpha(@theme_fg_color, 0.04);
+}
+.tabbar .tab.active {
+  background: @theme_base_color;
+  border-color: alpha(@theme_fg_color, 0.18);
+}
+.tabbar .tab-title {
+  padding: 4px 7px 3px 10px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 8px 0 0 0;
+}
+.tabbar .tab-title label {
+  font-size: 12px;
+  color: alpha(@theme_fg_color, 0.72);
+}
+.tabbar .tab.active .tab-title label {
+  color: @theme_fg_color;
+  font-weight: 600;
+}
+.tabbar .tab-close {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin: 4px 4px 4px 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 5px;
+  opacity: 0.6;
+}
+.tabbar .tab-close:hover {
+  background: alpha(@theme_fg_color, 0.12);
+  opacity: 1;
+}
+.grammar-list row {
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
+}
+.grammar-list row:last-child {
+  border-bottom: none;
+}
 .formatbar {
   background: @theme_bg_color;
   border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
@@ -430,6 +533,48 @@ def _dialog_error(parent, message):
     dialog.destroy()
 
 
+def _dialog_info(parent, message, title="Markdown Studio"):
+    dialog = Gtk.MessageDialog(
+        transient_for=parent,
+        modal=True,
+        message_type=Gtk.MessageType.INFO,
+        buttons=Gtk.ButtonsType.CLOSE,
+        text=title,
+    )
+    dialog.format_secondary_text(message)
+    dialog.run()
+    dialog.destroy()
+
+
+class Document:
+    """One open file: its buffer, undo history, path and view state."""
+
+    def __init__(self, text, path=None, label=None, base_dir=None):
+        self.buffer = Gtk.TextBuffer()
+        self.buffer.set_text(text)
+        self.buffer.place_cursor(self.buffer.get_start_iter())
+        self.buffer.set_modified(False)
+        self.path = path
+        self.label = label
+        self.saved_text = text
+        self.undo_stack = []
+        self.redo_stack = []
+        self.history_text = text
+        self.history_cursor = 0
+        self.group_start = 0
+        self.scroll_ratio = 0.0
+        folder = os.path.dirname(path) if path else (base_dir or os.path.expanduser("~"))
+        self.base_uri = GLib.filename_to_uri(folder, None) + "/"
+        self.tab_widget = None
+        self.tab_label = None
+
+    @property
+    def display_name(self):
+        if self.path:
+            return os.path.basename(self.path)
+        return self.label or "Untitled"
+
+
 class MarkdownWindow(Gtk.ApplicationWindow):
     def __init__(self, application):
         super().__init__(application=application)
@@ -442,40 +587,36 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             except GLib.Error:
                 pass
 
-        self.file_path = None
         self._loading = False
         self._last_dir = os.path.expanduser("~")
         self._preview_ready = False
         self._preview_timeout = 0
         self._scroll_timeout = 0
-        self._base_uri = GLib.filename_to_uri(self._last_dir, None) + "/"
+        self._autosave_timeout = 0
+        self._autosave_enabled = True
+        self._grammar_checking = False
+        self._grammar_dialog = None
         self._first_map = True
-        self._undo_stack = []
-        self._redo_stack = []
         self._applying_history = False
-        self._history_text = ""
-        self._history_cursor = 0
-        self._saved_text = ""
-        self._group_start = 0
+        self.docs = []
+        self.doc = None
+        self.buffer = None
 
         self._build_actions()
         self._build_header()
+        self._build_tabs()
         self._build_body()
         self._build_statusbar()
         self._build_menu()
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root.pack_start(self.tab_scroll, False, False, 0)
         root.pack_start(self.paned, True, True, 0)
         root.pack_start(self.statusbar, False, False, 0)
         self.add(root)
 
         self.style_manager = Handy.StyleManager.get_default()
         self.style_manager.connect("notify::dark", self._on_theme_changed)
-
-        self.buffer = self.textview.get_buffer()
-        self.buffer.connect("changed", self._on_buffer_changed)
-        self.buffer.connect("mark-set", lambda *a: self._update_cursor())
-        self.buffer.connect("notify::modified", lambda *a: self._update_header())
 
         self.connect("map-event", self._on_first_map)
         self.connect("delete-event", self._on_delete_event)
@@ -488,10 +629,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             Gdk.DragAction.COPY,
         )
 
-        self._load_text(WELCOME, None)
-        self._update_header()
-        self._update_stats()
-        self._update_cursor()
+        self._new_document(WELCOME, None, label="Welcome")
         self.show_all()
         self.textview.grab_focus()
 
@@ -549,6 +687,70 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.menu_button.set_focus_on_click(False)
         self.header.pack_end(self.menu_button)
         self.set_titlebar(self.header)
+
+    def _build_tabs(self):
+        self.tabbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.tabbar.get_style_context().add_class("tabbar")
+        self.tabbar.set_margin_start(6)
+        self.tabbar.set_margin_end(6)
+        self.tabbar.set_margin_top(5)
+        self.tabbar.set_valign(Gtk.Align.END)
+
+        self.tab_scroll = Gtk.ScrolledWindow()
+        self.tab_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        self.tab_scroll.set_overlay_scrolling(True)
+        self.tab_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        self.tab_scroll.get_style_context().add_class("tabstrip")
+        self.tab_scroll.set_size_request(-1, 39)
+        self.tab_scroll.add(self.tabbar)
+
+    def _build_tab(self, doc):
+        tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        tab.get_style_context().add_class("tab")
+
+        label = Gtk.Label(label=doc.display_name)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_max_width_chars(26)
+        label.set_single_line_mode(True)
+        label.set_xalign(0)
+        title = Gtk.Button()
+        title.set_relief(Gtk.ReliefStyle.NONE)
+        title.set_focus_on_click(False)
+        title.get_style_context().add_class("tab-title")
+        title.add(label)
+        title.connect("clicked", lambda *_: self._select_document(doc))
+
+        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
+        close.set_relief(Gtk.ReliefStyle.NONE)
+        close.set_focus_on_click(False)
+        close.set_can_focus(False)
+        close.get_style_context().add_class("tab-close")
+        close.set_tooltip_text("Close file (Ctrl+W)")
+        close.connect("clicked", lambda *_: self._close_document(doc))
+
+        tab.pack_start(title, True, True, 0)
+        tab.pack_end(close, False, False, 0)
+        tab.set_tooltip_text(doc.path or "Not saved yet")
+        self.tabbar.pack_start(tab, False, False, 0)
+        doc.tab_widget = tab
+        doc.tab_label = label
+        tab.show_all()
+        return tab
+
+    def _update_tabs(self):
+        for doc in self.docs:
+            if doc.tab_widget is None:
+                continue
+            name = doc.display_name
+            if doc.buffer.get_modified():
+                name = "• " + name
+            doc.tab_label.set_text(name)
+            context = doc.tab_widget.get_style_context()
+            if doc is self.doc:
+                context.add_class("active")
+            else:
+                context.remove_class("active")
+            doc.tab_widget.set_tooltip_text(doc.path or "Not saved yet")
 
     def _tool_button(self, icon=None, label=None, action=None, tip=None):
         if icon:
@@ -720,15 +922,23 @@ class MarkdownWindow(Gtk.ApplicationWindow):
 
     def _build_menu(self):
         menu = Gio.Menu()
-        menu.append("New", "win.new")
+        menu.append("New Tab", "win.new")
         menu.append("Open…", "win.open")
         menu.append("Save", "win.save")
         menu.append("Save As…", "win.save_as")
+        menu.append("Close File", "win.close")
         menu.append("Export as HTML…", "win.export")
 
+        tools = Gio.Menu()
+        tools.append("Check Spelling & Grammar…", "win.grammar")
+        menu.append_section(None, tools)
+
         view = Gio.Menu()
+        view.append("Next Tab", "win.next_tab")
+        view.append("Previous Tab", "win.prev_tab")
         view.append("Toggle Preview", "win.preview")
         view.append("Word Wrap", "win.wrap")
+        view.append("Auto-save", "win.autosave")
         view.append("Fullscreen", "win.fullscreen")
         menu.append_section(None, view)
 
@@ -759,6 +969,10 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._add_action("open", self._on_open)
         self._add_action("save", self._on_save)
         self._add_action("save_as", self._on_save_as)
+        self._add_action("close", self._on_close)
+        self._add_action("next_tab", lambda *a: self._cycle_tab(1))
+        self._add_action("prev_tab", lambda *a: self._cycle_tab(-1))
+        self._add_action("grammar", self._on_check_grammar)
         self._add_action("export", self._on_export)
         self._add_action("undo", lambda *a: self._undo())
         self._add_action("redo", lambda *a: self._redo())
@@ -783,13 +997,16 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
         self._preview_action.connect("notify::state", self._sync_preview_toggle)
         self._add_action("wrap", self._on_wrap_toggled, state=True)
+        self._add_action("autosave", self._on_autosave_toggled, state=True)
         self._add_action("fullscreen", self._on_fullscreen)
         self._add_action("shortcuts", self._on_shortcuts)
 
     # ------------------------------------------------------------- preview ---
 
     def _init_preview(self):
-        self.webview.load_html(build_preview_shell(), self._base_uri)
+        if self.doc is None:
+            return False
+        self.webview.load_html(build_preview_shell(), self.doc.base_uri)
         return False
 
     def _on_preview_load(self, webview, event):
@@ -797,9 +1014,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             self._preview_ready = True
             self._push_content()
             self._apply_theme_to_preview()
+            ratio = self.doc.scroll_ratio if self.doc else 0.0
+            self._run_js("window.setScrollRatio(%f);" % ratio)
 
     def _push_content(self):
-        if not self._preview_ready:
+        if not self._preview_ready or self.buffer is None:
             return
         text = self._get_text()
         js = "window.setTheme(%s);window.setContent(%s);" % (
@@ -835,6 +1054,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._apply_theme_to_preview()
 
     def _on_editor_scroll(self, adjustment):
+        span = adjustment.get_upper() - adjustment.get_page_size()
+        if self.doc is not None:
+            self.doc.scroll_ratio = (
+                adjustment.get_value() / span if span > 0 else 0.0
+            )
         if not self._preview_ready or self._scroll_timeout:
             return
         self._scroll_timeout = GLib.timeout_add(45, self._flush_scroll, adjustment)
@@ -913,6 +1137,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
     # ---------------------------------------------------------- text utils ---
 
     def _get_text(self):
+        if self.buffer is None:
+            return ""
         start, end = self.buffer.get_bounds()
         return self.buffer.get_text(start, end, True)
 
@@ -1138,90 +1364,189 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.textview.grab_focus()
 
     def _undo(self):
-        if not self._undo_stack:
+        doc = self.doc
+        if doc is None or not doc.undo_stack:
             return
-        self._redo_stack.append((self._history_text, self._history_cursor))
-        text, cursor = self._undo_stack.pop()
-        self._group_start = 0
+        doc.redo_stack.append((doc.history_text, doc.history_cursor))
+        text, cursor = doc.undo_stack.pop()
+        doc.group_start = 0
         self._apply_history(text, cursor)
 
     def _redo(self):
-        if not self._redo_stack:
+        doc = self.doc
+        if doc is None or not doc.redo_stack:
             return
-        self._undo_stack.append((self._history_text, self._history_cursor))
-        text, cursor = self._redo_stack.pop()
-        self._group_start = 0
+        doc.undo_stack.append((doc.history_text, doc.history_cursor))
+        text, cursor = doc.redo_stack.pop()
+        doc.group_start = 0
         self._apply_history(text, cursor)
 
     def _apply_history(self, text, cursor):
+        doc = self.doc
         self._applying_history = True
-        self.buffer.set_text(text)
-        cursor = max(0, min(cursor, self.buffer.get_char_count()))
-        self.buffer.place_cursor(self.buffer.get_iter_at_offset(cursor))
+        doc.buffer.set_text(text)
+        cursor = max(0, min(cursor, doc.buffer.get_char_count()))
+        doc.buffer.place_cursor(doc.buffer.get_iter_at_offset(cursor))
         self._applying_history = False
-        self._history_text = text
-        self._history_cursor = cursor
-        self.buffer.set_modified(text != self._saved_text)
+        doc.history_text = text
+        doc.history_cursor = cursor
+        doc.buffer.set_modified(text != doc.saved_text)
         self._update_stats()
         self._update_header()
         self._schedule_preview()
-        self.textview.scroll_to_mark(self.buffer.get_insert(), 0.15, False, 0, 0)
+        self.textview.scroll_to_mark(doc.buffer.get_insert(), 0.15, False, 0, 0)
         self.textview.grab_focus()
 
     # --------------------------------------------------------------- files ---
 
+    def _text_of(self, doc):
+        start, end = doc.buffer.get_bounds()
+        return doc.buffer.get_text(start, end, True)
+
+    def _make_document(self, text, path=None, label=None):
+        doc = Document(text, path, label, self._last_dir)
+        doc.buffer.connect("changed", lambda buffer: self._on_buffer_changed(buffer))
+        doc.buffer.connect("mark-set", lambda buffer, *a: self._on_mark_set(buffer))
+        doc.buffer.connect("notify::modified", lambda buffer, *a: self._on_modified_changed(buffer))
+        return doc
+
+    def _new_document(self, text="", path=None, label=None):
+        doc = self._make_document(text, path, label)
+        self.docs.append(doc)
+        self._build_tab(doc)
+        self._select_document(doc)
+        return doc
+
+    def _select_document(self, doc):
+        if doc not in self.docs:
+            return
+        if self.doc is doc:
+            self.textview.grab_focus()
+            return
+        self._flush_pending_autosave()
+        self._store_active_view_state()
+        self.doc = doc
+        self.buffer = doc.buffer
+        self.textview.set_buffer(doc.buffer)
+        if doc.path:
+            self._last_dir = os.path.dirname(doc.path)
+        self._preview_ready = False
+        GLib.idle_add(self._init_preview)
+        GLib.idle_add(self._restore_editor_scroll, doc)
+        self._update_header()
+        self._update_stats()
+        self._update_cursor()
+        self.textview.grab_focus()
+
+    def _store_active_view_state(self):
+        if self.doc is None:
+            return
+        adjustment = self.editor_scroll.get_vadjustment()
+        span = adjustment.get_upper() - adjustment.get_page_size()
+        self.doc.scroll_ratio = adjustment.get_value() / span if span > 0 else 0.0
+
+    def _restore_editor_scroll(self, doc):
+        if doc is not self.doc:
+            return False
+        adjustment = self.editor_scroll.get_vadjustment()
+        span = adjustment.get_upper() - adjustment.get_page_size()
+        if span > 0:
+            adjustment.set_value(doc.scroll_ratio * span)
+        return False
+
+    def _close_document(self, doc):
+        if doc not in self.docs:
+            return
+        if doc is not self.doc:
+            self._select_document(doc)
+        self._flush_pending_autosave()
+        if not self._maybe_save(doc):
+            return
+        index = self.docs.index(doc)
+        self.docs.remove(doc)
+        if doc.tab_widget is not None:
+            self.tabbar.remove(doc.tab_widget)
+            doc.tab_widget.destroy()
+            doc.tab_widget = None
+        if not self.docs:
+            self.doc = None
+            self.buffer = None
+            self._new_document("", None)
+            return
+        self.doc = None
+        self.buffer = None
+        self._select_document(self.docs[min(index, len(self.docs) - 1)])
+
+    def _on_close(self, *_args):
+        if self.doc is not None:
+            self._close_document(self.doc)
+
+    def _cycle_tab(self, step):
+        if len(self.docs) < 2 or self.doc is None:
+            return
+        index = (self.docs.index(self.doc) + step) % len(self.docs)
+        self._select_document(self.docs[index])
+
     def _load_text(self, text, path):
+        doc = self.doc
+        if doc is None:
+            return
+        self._cancel_pending_autosave()
         self._loading = True
-        self.buffer.set_text(text)
-        self.buffer.place_cursor(self.buffer.get_start_iter())
-        self.file_path = path
+        doc.buffer.set_text(text)
+        doc.buffer.place_cursor(doc.buffer.get_start_iter())
+        self._loading = False
+        doc.path = path
+        doc.label = None
         if path:
             self._last_dir = os.path.dirname(path)
-        self._base_uri = GLib.filename_to_uri(
+        doc.base_uri = GLib.filename_to_uri(
             os.path.dirname(path) if path else self._last_dir, None
         ) + "/"
-        self._loading = False
-        self._saved_text = text
-        self._history_text = text
-        self._history_cursor = 0
-        self._undo_stack.clear()
-        self._redo_stack.clear()
-        self._group_start = 0
-        self.buffer.set_modified(False)
+        doc.saved_text = text
+        doc.history_text = text
+        doc.history_cursor = 0
+        doc.undo_stack.clear()
+        doc.redo_stack.clear()
+        doc.group_start = 0
+        doc.scroll_ratio = 0.0
+        doc.buffer.set_modified(False)
         self._preview_ready = False
         GLib.idle_add(self._init_preview)
         self._update_header()
         self._update_stats()
         self._update_cursor()
-        self.textview.scroll_to_iter(self.buffer.get_start_iter(), 0.0, False, 0, 0)
+        self.textview.scroll_to_iter(doc.buffer.get_start_iter(), 0.0, False, 0, 0)
         self._schedule_preview()
 
-    def load_path(self, path):
+    def _open_path(self, path):
         path = os.path.abspath(os.path.expanduser(path))
+        for doc in self.docs:
+            if doc.path and os.path.abspath(doc.path) == path:
+                self._select_document(doc)
+                return
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
         except OSError as error:
             _dialog_error(self, "Could not open %s\n\n%s" % (path, error))
             return
-        self._load_text(text, path)
-
-    def _open_path(self, path):
-        if not self._maybe_save():
+        current = self.doc
+        if (
+            current is not None
+            and current.path is None
+            and not current.buffer.get_modified()
+        ):
+            self._load_text(text, path)
             return
-        self.load_path(path)
+        self._new_document(text, path)
 
     def _on_open(self, *_args):
-        if not self._maybe_save():
-            return
-        path = self._choose_open()
-        if path:
-            self.load_path(path)
+        for path in self._choose_open():
+            self._open_path(path)
 
     def _on_new(self, *_args):
-        if not self._maybe_save():
-            return
-        self._load_text("", None)
+        self._new_document("", None)
         self.textview.grab_focus()
 
     def _on_save(self, *_args):
@@ -1230,41 +1555,443 @@ class MarkdownWindow(Gtk.ApplicationWindow):
     def _on_save_as(self, *_args):
         self._save(save_as=True)
 
-    def _save(self, save_as=False):
-        path = self.file_path
+    def _save(self, save_as=False, doc=None):
+        doc = doc or self.doc
+        if doc is None:
+            return False
+        self._cancel_pending_autosave()
+        path = doc.path
         if path is None or save_as:
-            path = self._choose_save()
+            path = self._choose_save(doc)
             if not path:
                 return False
             if not os.path.splitext(path)[1]:
                 path += ".md"
-        text = self._get_text()
+        text = self._text_of(doc)
         try:
             _atomic_write(path, text)
         except OSError as error:
             _dialog_error(self, "Could not save %s\n\n%s" % (path, error))
             return False
-        previous_dir = os.path.dirname(self.file_path) if self.file_path else None
-        self.file_path = path
-        self._last_dir = os.path.dirname(path)
-        self._base_uri = GLib.filename_to_uri(self._last_dir, None) + "/"
-        if previous_dir != self._last_dir:
-            self._preview_ready = False
-            GLib.idle_add(self._init_preview)
-        self.buffer.set_modified(False)
-        self._saved_text = text
-        self._update_header()
-        self.state_label.set_text("Saved")
+        previous_dir = os.path.dirname(doc.path) if doc.path else None
+        doc.path = path
+        doc.label = None
+        doc.base_uri = GLib.filename_to_uri(os.path.dirname(path), None) + "/"
+        doc.saved_text = text
+        doc.buffer.set_modified(False)
+        if doc is self.doc:
+            self._last_dir = os.path.dirname(path)
+            if previous_dir != self._last_dir:
+                self._preview_ready = False
+                GLib.idle_add(self._init_preview)
+            self._update_header()
+            self.state_label.set_text("Saved")
+        self._update_tabs()
         return True
 
+    # ------------------------------------------------------------ autosave ---
+
+    def _schedule_autosave(self):
+        if not self._autosave_enabled:
+            return
+        if self._autosave_timeout:
+            GLib.source_remove(self._autosave_timeout)
+        self._autosave_timeout = GLib.timeout_add(1200, self._flush_autosave)
+
+    def _cancel_pending_autosave(self):
+        if self._autosave_timeout:
+            GLib.source_remove(self._autosave_timeout)
+            self._autosave_timeout = 0
+
+    def _flush_pending_autosave(self):
+        if not self._autosave_timeout:
+            return
+        self._cancel_pending_autosave()
+        if self.doc is not None and self.doc.path:
+            self._autosave_document(self.doc)
+
+    def _flush_autosave(self):
+        self._autosave_timeout = 0
+        if self.doc is None or not self._autosave_enabled:
+            return False
+        if self.doc.path and self.doc.buffer.get_modified():
+            self._autosave_document(self.doc)
+        return False
+
+    def _autosave_document(self, doc):
+        if not doc.path or not doc.buffer.get_modified():
+            return True
+        text = self._text_of(doc)
+        try:
+            _atomic_write(doc.path, text)
+        except OSError:
+            if doc is self.doc:
+                self.state_label.set_text("Auto-save failed")
+            return False
+        doc.saved_text = text
+        doc.buffer.set_modified(False)
+        if doc is self.doc:
+            self._update_header()
+            self.state_label.set_text("Auto-saved")
+        self._update_tabs()
+        return True
+
+    def _autosave_all(self):
+        for doc in self.docs:
+            if doc.path and doc.buffer.get_modified():
+                self._autosave_document(doc)
+
+    def _on_autosave_toggled(self, action, value):
+        action.set_state(value)
+        self._autosave_enabled = value.get_boolean()
+        if self._autosave_enabled:
+            self._schedule_autosave()
+
+    # ------------------------------------------------- spelling & grammar ---
+
+    def _on_check_grammar(self, *_args):
+        if self._grammar_dialog is not None:
+            self._grammar_dialog.present()
+            return
+        if self._grammar_checking or self.doc is None:
+            return
+        text = self._text_of(self.doc)
+        if not text.strip():
+            _dialog_info(self, "There is no text to check.", "Nothing to check")
+            return
+        checked = text[:GRAMMAR_MAX_CHARS]
+        self._grammar_checking = True
+        self.state_label.set_text("Checking spelling & grammar…")
+        worker = threading.Thread(
+            target=self._grammar_worker,
+            args=(self.doc, text, checked),
+            daemon=True,
+        )
+        worker.start()
+
+    def _post_grammar(self, payload):
+        parsed = urllib.parse.urlparse(GRAMMAR_URL)
+        path = parsed.path or "/"
+        if parsed.query:
+            path += "?" + parsed.query
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise OSError("Unsupported grammar checker URL: %s" % GRAMMAR_URL)
+        if parsed.scheme == "https":
+            connection = _IPv4HTTPSConnection(parsed.hostname, port, timeout=20)
+        else:
+            connection = _IPv4HTTPConnection(parsed.hostname, port, timeout=20)
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=payload,
+                headers={
+                    "User-Agent": "MarkdownStudio/%s" % APP_VERSION,
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Accept": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            raw = response.read()
+            if response.status >= 400:
+                raise OSError("Grammar service returned HTTP %s" % response.status)
+        finally:
+            connection.close()
+        return json.loads(raw.decode("utf-8"))
+
+    def _grammar_worker(self, doc, text, checked):
+        data = None
+        error = None
+        try:
+            payload = urllib.parse.urlencode(
+                {"text": checked, "language": GRAMMAR_LANGUAGE}
+            ).encode("utf-8")
+            data = self._post_grammar(payload)
+        except Exception as error_object:  # network, TLS, JSON, rate limit…
+            error = str(error_object) or error_object.__class__.__name__
+        GLib.idle_add(self._show_grammar_results, doc, text, checked, data, error)
+
+    def _show_grammar_results(self, doc, text, checked, data, error):
+        self._grammar_checking = False
+        if doc not in self.docs:
+            return False
+        if doc is self.doc:
+            self._update_header()
+        if error:
+            _dialog_error(
+                self,
+                "Could not reach the spelling and grammar service.\n\n"
+                "Check your internet connection and try again.\n\n%s" % error,
+            )
+            return False
+        matches = data.get("matches", []) if data else []
+        matches = [dict(match) for match in matches]
+        self._normalise_grammar_offsets(checked, matches)
+        if not matches:
+            _dialog_info(
+                self,
+                "No spelling or grammar issues were found.",
+                "Spelling & Grammar",
+            )
+            return False
+        self._build_grammar_dialog(doc, text, checked, matches)
+        return False
+
+    def _build_grammar_dialog(self, doc, text, checked, matches):
+        dialog = Gtk.Dialog(
+            title="Spelling & Grammar",
+            transient_for=self,
+            modal=False,
+        )
+        dialog.set_default_size(780, 560)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        fixable = any(match.get("replacements") for match in matches)
+        if fixable:
+            dialog.add_button("Fix All", Gtk.ResponseType.APPLY)
+
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        content.set_margin_top(10)
+        content.set_margin_bottom(8)
+
+        count_label = Gtk.Label()
+        count_label.set_markup(
+            "<b>%d issue%s found</b>" % (len(matches), "" if len(matches) == 1 else "s")
+        )
+        count_label.set_xalign(0)
+        content.pack_start(count_label, False, False, 0)
+        host = urllib.parse.urlparse(GRAMMAR_URL).netloc or GRAMMAR_URL
+        detail = "Checked with LanguageTool. Text is sent to %s." % host
+        if len(text) > len(checked):
+            detail += " Only the first %s characters were checked." % format(
+                len(checked), ","
+            )
+        detail_label = Gtk.Label(label=detail)
+        detail_label.set_xalign(0)
+        detail_label.set_line_wrap(True)
+        detail_label.get_style_context().add_class("dim-label")
+        content.pack_start(detail_label, False, False, 0)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        listbox.get_style_context().add_class("grammar-list")
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(listbox)
+        content.pack_start(scroller, True, True, 0)
+
+        for match in matches:
+            listbox.add(self._build_issue_row(doc, checked, text, match, dialog))
+
+        dialog.connect(
+            "response",
+            lambda dlg, response: self._on_grammar_response(
+                dlg, response, doc, text, matches
+            ),
+        )
+        dialog.connect("destroy", self._on_grammar_destroy)
+        self._grammar_dialog = dialog
+        dialog.show_all()
+
+    def _build_issue_row(self, doc, text, full_text, match, dialog):
+        row = Gtk.ListBoxRow()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        message = Gtk.Label()
+        message.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(match.get("message", "Issue"))
+        )
+        message.set_xalign(0)
+        message.set_line_wrap(True)
+        box.pack_start(message, False, False, 0)
+
+        context = Gtk.Label()
+        context.set_markup(self._issue_markup(text, match))
+        context.set_xalign(0)
+        context.set_line_wrap(True)
+        box.pack_start(context, False, False, 0)
+
+        replacements = [
+            item.get("value", "")
+            for item in (match.get("replacements") or [])
+            if item.get("value")
+        ]
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.set_margin_top(3)
+        if replacements:
+            combo = Gtk.ComboBoxText()
+            for value in replacements[:10]:
+                combo.append_text(value)
+            combo.set_active(0)
+            apply = Gtk.Button(label="Apply")
+            apply.get_style_context().add_class("suggested-action")
+            apply.connect(
+                "clicked",
+                lambda *_: self._apply_grammar_fix(
+                    doc, full_text, match, combo.get_active_text(), dialog
+                ),
+            )
+            controls.pack_start(combo, True, True, 0)
+            controls.pack_end(apply, False, False, 0)
+        else:
+            note = Gtk.Label(label="No automatic suggestion")
+            note.set_xalign(0)
+            note.get_style_context().add_class("dim-label")
+            controls.pack_start(note, True, True, 0)
+        box.pack_start(controls, False, False, 0)
+
+        row.add(box)
+        return row
+
+    def _normalise_grammar_offsets(self, text, matches):
+        """LanguageTool counts UTF-16 units; GTK uses Unicode code points."""
+        for match in matches:
+            try:
+                start = int(match.get("offset", 0))
+                length = int(match.get("length", 0))
+            except (TypeError, ValueError):
+                continue
+            start_index = self._utf16_to_index(text, start)
+            end_index = self._utf16_to_index(text, start + length)
+            match["offset"] = start_index
+            match["length"] = max(0, end_index - start_index)
+
+    def _utf16_to_index(self, text, units):
+        if units <= 0:
+            return 0
+        count = 0
+        for index, char in enumerate(text):
+            if count >= units:
+                return index
+            count += 2 if ord(char) > 0xFFFF else 1
+        return len(text)
+
+    def _issue_markup(self, text, match):
+        try:
+            offset = max(0, int(match.get("offset", 0)))
+            length = max(0, int(match.get("length", 0)))
+        except (TypeError, ValueError):
+            offset, length = 0, 0
+        offset = min(offset, len(text))
+        length = min(length, len(text) - offset)
+        start = max(0, offset - 42)
+        end = min(len(text), offset + length + 42)
+        prefix = text[start:offset].replace("\n", " ")
+        issue = text[offset : offset + length].replace("\n", " ")
+        suffix = text[offset + length : end].replace("\n", " ")
+        return "<small>%s%s<b>%s</b>%s%s</small>" % (
+            "…" if start > 0 else "",
+            GLib.markup_escape_text(prefix),
+            GLib.markup_escape_text(issue),
+            GLib.markup_escape_text(suffix),
+            "…" if end < len(text) else "",
+        )
+
+    def _apply_grammar_fix(self, doc, expected_text, match, replacement, dialog):
+        if not replacement:
+            return
+        if doc not in self.docs or self._text_of(doc) != expected_text:
+            _dialog_error(
+                self,
+                "The document changed since the check. Run the check again.",
+            )
+            self._close_grammar_dialog(dialog)
+            return
+        try:
+            offset = int(match.get("offset", -1))
+            length = int(match.get("length", 0))
+        except (TypeError, ValueError):
+            offset, length = -1, 0
+        if offset < 0 or offset + length > len(expected_text):
+            self._close_grammar_dialog(dialog)
+            return
+        self._select_document(doc)
+        buffer = doc.buffer
+        buffer.begin_user_action()
+        buffer.delete(
+            buffer.get_iter_at_offset(offset),
+            buffer.get_iter_at_offset(offset + length),
+        )
+        buffer.insert(buffer.get_iter_at_offset(offset), replacement)
+        buffer.end_user_action()
+        self._close_grammar_dialog(dialog)
+
+    def _apply_all_grammar_fixes(self, doc, expected_text, matches, dialog):
+        if doc not in self.docs or self._text_of(doc) != expected_text:
+            _dialog_error(
+                self,
+                "The document changed since the check. Run the check again.",
+            )
+            self._close_grammar_dialog(dialog)
+            return
+        fixes = []
+        for match in matches:
+            replacements = match.get("replacements") or []
+            if not replacements:
+                continue
+            try:
+                offset = int(match.get("offset", -1))
+                length = int(match.get("length", 0))
+            except (TypeError, ValueError):
+                continue
+            if offset < 0 or offset + length > len(expected_text):
+                continue
+            fixes.append((offset, length, replacements[0].get("value", "")))
+        if not fixes:
+            self._close_grammar_dialog(dialog)
+            return
+        fixes.sort(key=lambda item: item[0])
+        filtered = []
+        boundary = -1
+        for fix in fixes:
+            if fix[0] >= boundary:
+                filtered.append(fix)
+                boundary = fix[0] + fix[1]
+        fixes = sorted(filtered, key=lambda item: item[0], reverse=True)
+        self._select_document(doc)
+        buffer = doc.buffer
+        buffer.begin_user_action()
+        for offset, length, replacement in fixes:
+            buffer.delete(
+                buffer.get_iter_at_offset(offset),
+                buffer.get_iter_at_offset(offset + length),
+            )
+            buffer.insert(buffer.get_iter_at_offset(offset), replacement)
+        buffer.end_user_action()
+        self._close_grammar_dialog(dialog)
+
+    def _on_grammar_response(self, dialog, response, doc, text, matches):
+        if response == Gtk.ResponseType.APPLY:
+            self._apply_all_grammar_fixes(doc, text, matches, dialog)
+        else:
+            self._close_grammar_dialog(dialog)
+
+    def _close_grammar_dialog(self, dialog):
+        if self._grammar_dialog is dialog:
+            self._grammar_dialog = None
+        if dialog is not None:
+            dialog.destroy()
+
+    def _on_grammar_destroy(self, *_args):
+        self._grammar_dialog = None
+
     def _on_export(self, *_args):
-        path = self._choose_export()
+        doc = self.doc
+        path = self._choose_export(doc)
         if not path:
             return
         if not os.path.splitext(path)[1]:
             path += ".html"
-        name = os.path.basename(self.file_path) if self.file_path else "Untitled"
-        document = build_export_html(os.path.splitext(name)[0], self._get_text())
+        name = os.path.basename(doc.path) if doc.path else (doc.label or "Untitled")
+        document = build_export_html(os.path.splitext(name)[0], self._text_of(doc))
         try:
             _atomic_write(path, document)
         except OSError as error:
@@ -1282,6 +2009,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
         dialog.set_default_response(Gtk.ResponseType.ACCEPT)
         dialog.set_current_folder(self._last_dir)
+        dialog.set_select_multiple(True)
 
         markdown_filter = Gtk.FileFilter()
         markdown_filter.set_name("Markdown files")
@@ -1295,13 +2023,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         dialog.add_filter(all_filter)
 
         response = dialog.run()
-        path = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
+        paths = dialog.get_filenames() if response == Gtk.ResponseType.ACCEPT else []
         dialog.destroy()
-        if path:
-            self._last_dir = os.path.dirname(path)
-        return path
+        if paths:
+            self._last_dir = os.path.dirname(paths[-1])
+        return paths
 
-    def _choose_save(self):
+    def _choose_save(self, doc=None):
+        doc = doc or self.doc
+        path = doc.path if doc is not None else None
         dialog = Gtk.FileChooserDialog(
             title="Save Markdown File",
             transient_for=self,
@@ -1314,9 +2044,9 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         dialog.set_default_response(Gtk.ResponseType.ACCEPT)
         dialog.set_do_overwrite_confirmation(True)
         dialog.set_current_folder(self._last_dir)
-        if self.file_path:
-            dialog.set_filename(self.file_path)
-            dialog.set_current_name(os.path.basename(self.file_path))
+        if path:
+            dialog.set_filename(path)
+            dialog.set_current_name(os.path.basename(path))
         else:
             dialog.set_current_name("untitled.md")
 
@@ -1327,13 +2057,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         dialog.add_filter(filter_md)
 
         response = dialog.run()
-        path = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
+        chosen = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
         dialog.destroy()
-        if path:
-            self._last_dir = os.path.dirname(path)
-        return path
+        if chosen:
+            self._last_dir = os.path.dirname(chosen)
+        return chosen
 
-    def _choose_export(self):
+    def _choose_export(self, doc=None):
+        doc = doc or self.doc
+        path = doc.path if doc is not None else None
         dialog = Gtk.FileChooserDialog(
             title="Export as HTML",
             transient_for=self,
@@ -1346,11 +2078,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         dialog.set_default_response(Gtk.ResponseType.ACCEPT)
         dialog.set_do_overwrite_confirmation(True)
         dialog.set_current_folder(self._last_dir)
-        base = (
-            os.path.splitext(os.path.basename(self.file_path))[0]
-            if self.file_path
-            else "untitled"
-        )
+        base = os.path.splitext(os.path.basename(path))[0] if path else "untitled"
         dialog.set_current_name(base + ".html")
 
         filter_html = Gtk.FileFilter()
@@ -1359,14 +2087,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         dialog.add_filter(filter_html)
 
         response = dialog.run()
-        path = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
+        chosen = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
         dialog.destroy()
-        if path:
-            self._last_dir = os.path.dirname(path)
-        return path
+        if chosen:
+            self._last_dir = os.path.dirname(chosen)
+        return chosen
 
-    def _maybe_save(self):
-        if not self.buffer.get_modified():
+    def _maybe_save(self, doc=None):
+        doc = doc or self.doc
+        if doc is None or not doc.buffer.get_modified():
             return True
         dialog = Gtk.MessageDialog(
             transient_for=self,
@@ -1377,7 +2106,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
         dialog.format_secondary_text(
             "“%s” has unsaved changes. Your changes will be lost if you don't save them."
-            % (os.path.basename(self.file_path) if self.file_path else "Untitled")
+            % doc.display_name
         )
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.add_button("Discard", Gtk.ResponseType.NO)
@@ -1389,59 +2118,85 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.YES:
-            return self._save()
+            return self._save(doc=doc)
         return response == Gtk.ResponseType.NO
 
     def _on_delete_event(self, *_args):
-        return not self._maybe_save()
+        self._flush_pending_autosave()
+        self._autosave_all()
+        for doc in list(self.docs):
+            if doc.buffer.get_modified():
+                self._select_document(doc)
+                if not self._maybe_save(doc):
+                    return True
+        return False
 
     # -------------------------------------------------------------- status ---
 
-    def _on_buffer_changed(self, *_args):
-        if self._loading:
+    def _on_buffer_changed(self, buffer=None):
+        if self._loading or self.doc is None:
             return
-        current = self._get_text()
-        if not self._applying_history and current != self._history_text:
+        if buffer is not None and buffer is not self.buffer:
+            return
+        doc = self.doc
+        current = self._text_of(doc)
+        if not self._applying_history and current != doc.history_text:
             now = GLib.get_monotonic_time()
-            if not self._undo_stack or now - self._group_start > 1_200_000:
-                self._undo_stack.append((self._history_text, self._history_cursor))
-                del self._undo_stack[:-80]
+            if not doc.undo_stack or now - doc.group_start > 1_200_000:
+                doc.undo_stack.append((doc.history_text, doc.history_cursor))
+                del doc.undo_stack[:-80]
                 while (
-                    sum(len(entry[0]) for entry in self._undo_stack) > 8_000_000
-                    and len(self._undo_stack) > 1
+                    sum(len(entry[0]) for entry in doc.undo_stack) > 8_000_000
+                    and len(doc.undo_stack) > 1
                 ):
-                    self._undo_stack.pop(0)
-                self._redo_stack.clear()
-            self._group_start = now
-            self._history_text = current
-            self._history_cursor = self.buffer.get_iter_at_mark(
-                self.buffer.get_insert()
+                    doc.undo_stack.pop(0)
+                doc.redo_stack.clear()
+            doc.group_start = now
+            doc.history_text = current
+            doc.history_cursor = doc.buffer.get_iter_at_mark(
+                doc.buffer.get_insert()
             ).get_offset()
-            self.buffer.set_modified(current != self._saved_text)
+            doc.buffer.set_modified(current != doc.saved_text)
         self._update_stats()
         self._update_header()
         self._schedule_preview()
+        self._schedule_autosave()
+
+    def _on_mark_set(self, buffer):
+        if buffer is self.buffer:
+            self._update_cursor()
+
+    def _on_modified_changed(self, buffer):
+        if buffer is self.buffer:
+            self._update_header()
 
     def _update_header(self):
-        name = os.path.basename(self.file_path) if self.file_path else "Untitled"
-        modified = self.buffer.get_modified()
+        if self.doc is None or self.buffer is None:
+            return
+        doc = self.doc
+        name = doc.display_name
+        modified = doc.buffer.get_modified()
         self.title_label.set_text(name)
-        self.set_title("%s — %s" % (name, APP_NAME))
-        if self.file_path:
-            location = os.path.dirname(self.file_path).replace(os.path.expanduser("~"), "~", 1)
+        title = ("• " if modified else "") + name
+        self.set_title("%s — %s" % (title, APP_NAME))
+        if doc.path:
+            location = os.path.dirname(doc.path).replace(os.path.expanduser("~"), "~", 1)
             subtitle = ("Edited · " if modified else "") + location
         else:
             subtitle = "Edited" if modified else "Not saved yet"
         self.subtitle_label.set_text(subtitle)
         if modified:
             self.state_label.set_text("Edited")
-        elif self.file_path:
+        elif doc.path:
             self.state_label.set_text("Saved")
         else:
             self.state_label.set_text("Not saved")
+        self._update_tabs()
 
     def _update_stats(self):
-        text = self._get_text()
+        if self.doc is None:
+            return
+        text = self._text_of(self.doc)
         words = len(text.split())
         characters = len(text)
         lines = text.count("\n") + 1 if text else 1
@@ -1453,6 +2208,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
 
     def _update_cursor(self):
+        if self.doc is None or self.buffer is None:
+            return
         iterator = self.buffer.get_iter_at_mark(self.buffer.get_insert())
         self.cursor_label.set_text(
             "Ln %s, Col %s" % (format(iterator.get_line() + 1, ","), iterator.get_line_offset() + 1)
@@ -1479,9 +2236,13 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         uris = data.get_uris()
         if not uris:
             return
-        path = GLib.filename_from_uri(uris[0])[0]
-        if os.path.isfile(path):
-            self._open_path(path)
+        for uri in uris:
+            try:
+                path = GLib.filename_from_uri(uri)[0]
+            except (TypeError, ValueError):
+                continue
+            if os.path.isfile(path):
+                self._open_path(path)
 
     def _on_shortcuts(self, *_args):
         dialog = Gtk.MessageDialog(
@@ -1499,9 +2260,13 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             "  Ctrl+Shift+8/7  Lists Ctrl+Shift+9  Quote\n"
             "  Ctrl+Z / Ctrl+Shift+Z  Undo / Redo\n\n"
             "Files\n"
-            "  Ctrl+N  New           Ctrl+O  Open\n"
+            "  Ctrl+N  New tab       Ctrl+O  Open\n"
             "  Ctrl+S  Save          Ctrl+Shift+S  Save As\n"
+            "  Ctrl+W  Close file    Ctrl+Tab  Next tab\n"
+            "  Ctrl+Shift+Tab  Previous tab\n"
             "  Ctrl+Shift+E  Export as HTML\n\n"
+            "Tools\n"
+            "  Ctrl+Shift+G  Check spelling & grammar\n\n"
             "View\n"
             "  Ctrl+Shift+P  Toggle preview     F11  Fullscreen\n"
             "  Ctrl+Q  Quit"
@@ -1543,7 +2308,11 @@ class MarkdownStudio(Gtk.Application):
             "win.open": ["<Control>o"],
             "win.save": ["<Control>s"],
             "win.save_as": ["<Control><Shift>s"],
+            "win.close": ["<Control>w"],
+            "win.next_tab": ["<Control>Tab", "<Control>Page_Down"],
+            "win.prev_tab": ["<Control><Shift>Tab", "<Control>Page_Up"],
             "win.export": ["<Control><Shift>e"],
+            "win.grammar": ["<Control><Shift>g"],
             "win.undo": ["<Control>z"],
             "win.redo": ["<Control><Shift>z", "<Control>y"],
             "win.bold": ["<Control>b"],
@@ -1580,8 +2349,8 @@ class MarkdownStudio(Gtk.Application):
         if self.window is None:
             self.window = MarkdownWindow(application=self)
         self.window.present()
-        if files:
-            path = files[0].get_path()
+        for gfile in files:
+            path = gfile.get_path()
             if path:
                 self.window._open_path(path)
 
@@ -1599,7 +2368,7 @@ class MarkdownStudio(Gtk.Application):
         dialog.set_program_name(APP_NAME)
         dialog.set_version(APP_VERSION)
         dialog.set_comments(
-            "A small, fast Markdown editor with a live preview.\n"
+            "A small, fast Markdown editor with tabs and a live preview.\n"
             "Write on the left, see the result on the right."
         )
         dialog.set_license_type(Gtk.License.MIT_X11)

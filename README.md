@@ -8,6 +8,12 @@ half: a toolbar-driven editor on the left and a live preview on the right.
 ## Features
 
 - Split view: Markdown editor with a formatting toolbar, live preview beside it.
+- Tabs for multiple open files, with a close button on every tab. Open several
+  files at once from the file chooser, the command line, or by dragging them in.
+- Automatic saving of named files while you type, plus a save-on-close pass so
+  an accidental close does not lose changes.
+- Spelling and grammar review through LanguageTool (online; optional and only
+  runs when you choose **Tools → Check Spelling & Grammar**).
 - Live preview with GitHub-style typography, tables, task lists, syntax
   highlighting (Pygments) and local/remote images.
 - Toolbar for bold, italic, strikethrough, inline code, headings, quotes, lists,
@@ -64,6 +70,7 @@ that association.
 ```bash
 markdown-studio                 # start with the welcome document
 markdown-studio notes.md        # open a file
+markdown-studio a.md b.md       # open several files in tabs
 python3 app.py notes.md         # run without installing
 ```
 
@@ -72,7 +79,10 @@ python3 app.py notes.md         # run without installing
 | Action | Shortcut |
 | --- | --- |
 | New / Open / Save / Save As | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
+| Close file | `Ctrl+W` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Export as HTML | `Ctrl+Shift+E` |
+| Check spelling & grammar | `Ctrl+Shift+G` |
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X` |
 | Inline code / Code block | `Ctrl+E` / `Ctrl+Shift+C` |
@@ -94,6 +104,13 @@ python3 app.py notes.md         # run without installing
   code blocks are highlighted by Pygments.
 - Saves are atomic: the document is written to a temporary file and renamed
   into place, so a crash or power loss cannot leave a truncated file.
+- Named files are auto-saved after a short pause in typing. Untitled documents
+  still ask where to save when you close them.
+- Spelling and grammar checks send the document text to
+  `api.languagetool.org` only when you run the check. QuillBot's API requires a
+  paid account, so LanguageTool is used instead. Set
+  `MARKDOWN_STUDIO_GRAMMAR_URL` and `MARKDOWN_STUDIO_GRAMMAR_LANGUAGE` to use a
+  self-hosted LanguageTool server or another language.
 
 ## Files
 
