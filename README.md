@@ -25,7 +25,10 @@ half: a toolbar-driven editor on the left and a live preview on the right.
   `GtkTextBuffer` undo.
 - Open, save, save-as and export to a standalone HTML file.
 - Drag a `.md` file onto the window to open it.
-- Automatic light/dark preview that follows the desktop colour scheme.
+- Automatic light/dark appearance for the whole window and preview, following
+  the desktop colour scheme.
+- Responsive layout: the toolbar stays on one line, tabs scroll when needed,
+  and the editor/preview split stays proportional as the window resizes.
 - Scroll position is mirrored from the editor to the preview.
 - Word, character and line counts, plus cursor position.
 

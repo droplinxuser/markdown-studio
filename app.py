@@ -39,7 +39,7 @@ from pygments.util import ClassNotFound
 
 APP_ID = "io.github.markdownstudio.MarkdownStudio"
 APP_NAME = "Markdown Studio"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "markdown-studio.svg")
 
@@ -463,16 +463,29 @@ button.new-tab:active {
   padding: 3px 4px;
 }
 .formatbar flowboxchild { padding: 0; }
+.formatbar .toolbar-scroll,
+.formatbar .toolbar-scroll viewport {
+  background: transparent;
+}
+.formatbar scrollbar {
+  background: transparent;
+}
+.formatbar scrollbar slider {
+  min-height: 4px;
+  min-width: 28px;
+  border-radius: 2px;
+  background: alpha(@theme_fg_color, 0.16);
+}
 .formatbar .tool-group {
   background: alpha(@theme_fg_color, 0.035);
   border: 1px solid alpha(@theme_fg_color, 0.05);
   border-radius: 9px;
-  padding: 1px 2px;
+  padding: 1px 1px;
 }
 button.tool {
   min-height: 26px;
   min-width: 24px;
-  padding: 3px 6px;
+  padding: 3px 3px;
   border-radius: 7px;
   border: none;
   background: transparent;
@@ -665,7 +678,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
     def __init__(self, application):
         super().__init__(application=application)
         self.set_default_size(1400, 880)
-        self.set_size_request(760, 500)
+        self.set_size_request(640, 420)
         self.set_title(APP_NAME)
         if os.path.exists(ICON_PATH):
             try:
@@ -694,6 +707,13 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.docs = []
         self.doc = None
         self.buffer = None
+        self._paned_ratio = 0.5
+        self._last_paned_width = 0
+        self._in_paned_resize = False
+
+        self.style_manager = Handy.StyleManager.get_default()
+        self._apply_system_theme()
+        self.style_manager.connect("notify::dark", self._on_theme_changed)
 
         self._build_actions()
         self._build_header()
@@ -704,12 +724,10 @@ class MarkdownWindow(Gtk.ApplicationWindow):
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         root.pack_start(self.tab_strip, False, False, 0)
+        root.pack_start(self.formatbar, False, False, 0)
         root.pack_start(self.paned, True, True, 0)
         root.pack_start(self.statusbar, False, False, 0)
         self.add(root)
-
-        self.style_manager = Handy.StyleManager.get_default()
-        self.style_manager.connect("notify::dark", self._on_theme_changed)
 
         self.connect("map-event", self._on_first_map)
         self.connect("delete-event", self._on_delete_event)
@@ -899,19 +917,22 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         bar.get_style_context().add_class("formatbar")
 
-        flow = Gtk.FlowBox()
-        flow.set_orientation(Gtk.Orientation.HORIZONTAL)
-        flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow.set_homogeneous(False)
-        flow.set_max_children_per_line(5)
-        flow.set_column_spacing(10)
-        flow.set_row_spacing(2)
-        flow.set_margin_start(9)
-        flow.set_margin_end(4)
-        flow.set_margin_top(4)
-        flow.set_margin_bottom(4)
-        flow.set_valign(Gtk.Align.CENTER)
-        flow.set_hexpand(True)
+        tool_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        tool_row.set_valign(Gtk.Align.CENTER)
+        tool_row.set_margin_start(5)
+        tool_row.set_margin_end(5)
+        tool_row.set_margin_top(4)
+        tool_row.set_margin_bottom(4)
+
+        tool_scroll = Gtk.ScrolledWindow()
+        tool_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        tool_scroll.set_overlay_scrolling(True)
+        tool_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        tool_scroll.set_propagate_natural_height(True)
+        tool_scroll.set_hexpand(True)
+        tool_scroll.set_valign(Gtk.Align.CENTER)
+        tool_scroll.get_style_context().add_class("toolbar-scroll")
+        tool_scroll.add(tool_row)
 
         groups = [
             [
@@ -950,7 +971,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             box.get_style_context().add_class("tool-group")
             for button in group:
                 box.pack_start(button, False, False, 0)
-            flow.add(box)
+            tool_row.pack_start(box, False, False, 0)
 
         self.preview_toggle = Gtk.ToggleButton()
         self.preview_toggle.set_image(
@@ -966,10 +987,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.preview_toggle.get_style_context().add_class("tool")
         self.preview_toggle.connect("toggled", self._on_preview_button)
 
-        bar.pack_start(flow, True, True, 0)
+        bar.pack_start(tool_scroll, True, True, 0)
         bar.pack_end(self.preview_toggle, False, False, 0)
         self.formatbar = bar
-        self.toolbar_flow = flow
+        self.toolbar_scroll = tool_scroll
+        self.toolbar_flow = tool_row
 
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
@@ -989,7 +1011,6 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.editor_scroll.set_overlay_scrolling(True)
         self.editor_scroll.add(self.textview)
 
-        editor_box.pack_start(bar, False, False, 0)
         editor_box.pack_start(self.editor_scroll, True, True, 0)
         self.editor_box = editor_box
 
@@ -1009,6 +1030,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.paned.pack1(editor_box, resize=True, shrink=False)
         self.paned.pack2(self.webview, resize=True, shrink=False)
         self.paned.set_position(700)
+        self.paned.connect("notify::position", self._on_paned_position_changed)
+        self.connect("size-allocate", self._on_window_size_allocate)
 
         self.editor_scroll.get_vadjustment().connect("value-changed", self._on_editor_scroll)
 
@@ -1021,11 +1044,14 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.statusbar.set_margin_bottom(5)
 
         self.stats_label = Gtk.Label(label="0 words")
+        self.stats_label.set_xalign(0)
+        self.stats_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.stats_label.set_hexpand(True)
         self.cursor_label = Gtk.Label(label="Ln 1, Col 1")
         self.encoding_label = Gtk.Label(label="UTF-8")
         self.state_label = Gtk.Label(label="Not saved")
 
-        self.statusbar.pack_start(self.stats_label, False, False, 0)
+        self.statusbar.pack_start(self.stats_label, True, True, 0)
         self.statusbar.pack_end(self.encoding_label, False, False, 0)
         self.statusbar.pack_end(Gtk.Label(label="·"), False, False, 0)
         self.statusbar.pack_end(self.cursor_label, False, False, 0)
@@ -1162,7 +1188,32 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if self._preview_ready:
             self._run_js("window.setTheme(%s);" % ("true" if dark else "false"))
 
+    def _apply_system_theme(self):
+        # Handy.StyleManager owns the GTK dark preference and follows the
+        # desktop colour scheme automatically; only derived colours need a
+        # refresh here.
+        self._update_grammar_tag_colors()
+
+    def _grammar_colors(self):
+        if self.style_manager.get_dark():
+            return "#ff7b72", "rgba(255, 123, 114, 0.16)"
+        return "#d1242f", "rgba(209, 36, 47, 0.09)"
+
+    def _update_grammar_tag_colors(self):
+        underline, background = self._grammar_colors()
+        for doc in self.docs:
+            tag = doc.buffer.get_tag_table().lookup("grammar-error")
+            if tag is None:
+                continue
+            color = Gdk.RGBA()
+            color.parse(underline)
+            tag.set_property("underline-rgba", color)
+            fill = Gdk.RGBA()
+            fill.parse(background)
+            tag.set_property("background-rgba", fill)
+
     def _on_theme_changed(self, *_args):
+        self._apply_system_theme()
         self._apply_theme_to_preview()
 
     def _on_editor_scroll(self, adjustment):
@@ -2084,12 +2135,13 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if tag is None:
             tag = doc.buffer.create_tag("grammar-error")
             tag.set_property("underline", Pango.Underline.ERROR)
-            underline = Gdk.RGBA()
-            underline.parse("#e5484d")
-            tag.set_property("underline-rgba", underline)
-            background = Gdk.RGBA()
-            background.parse("rgba(229, 72, 77, 0.10)")
-            tag.set_property("background-rgba", background)
+            underline, background = self._grammar_colors()
+            color = Gdk.RGBA()
+            color.parse(underline)
+            tag.set_property("underline-rgba", color)
+            fill = Gdk.RGBA()
+            fill.parse(background)
+            tag.set_property("background-rgba", fill)
         return tag
 
     def _clear_grammar_highlights(self, doc):
@@ -2519,6 +2571,32 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if width > 0:
             self.paned.set_position(width // 2)
         return False
+
+    def _on_window_size_allocate(self, _widget, _allocation):
+        if self._in_paned_resize:
+            return False
+        width = self.paned.get_allocated_width()
+        if width <= 0:
+            return False
+        self._last_paned_width = width
+        target = int(width * self._paned_ratio)
+        if abs(self.paned.get_position() - target) > 1:
+            self._in_paned_resize = True
+            try:
+                self.paned.set_position(target)
+            finally:
+                self._in_paned_resize = False
+        return False
+
+    def _on_paned_position_changed(self, *_args):
+        if self._in_paned_resize:
+            return
+        width = self.paned.get_allocated_width()
+        if width <= 0 or width != self._last_paned_width:
+            return
+        ratio = self.paned.get_position() / width
+        if 0.1 <= ratio <= 0.9:
+            self._paned_ratio = ratio
 
     def _on_key_press(self, _widget, event):
         if event.keyval == Gdk.KEY_Escape and self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
