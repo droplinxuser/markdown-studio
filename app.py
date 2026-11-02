@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 import gi
 
@@ -364,6 +365,56 @@ paned > separator:hover { background: alpha(@theme_fg_color, 0.22); }
 headerbar .title-label { font-weight: 700; font-size: 14px; }
 headerbar .subtitle-label { font-size: 10.5px; color: alpha(@theme_fg_color, 0.6); }
 """
+
+
+def _atomic_write(path, text):
+    """Write ``text`` to ``path`` without risking a half-written file.
+
+    The data is written to a temporary file in the same directory, flushed to
+    disk, and renamed over the target.  A crash or power loss mid-write leaves
+    the previous version intact.  Existing file permissions (and ownership,
+    where permitted) are preserved.
+    """
+    target = os.path.realpath(path)
+    directory = os.path.dirname(target) or "."
+    try:
+        info = os.stat(target)
+    except FileNotFoundError:
+        info = None
+    if info is not None and not os.access(target, os.W_OK):
+        raise PermissionError("Permission denied: %s" % path)
+    fd, tmp = tempfile.mkstemp(prefix=".markdown-studio-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if info is not None:
+            os.chmod(tmp, info.st_mode & 0o777)
+            try:
+                os.chown(tmp, info.st_uid, info.st_gid)
+            except OSError:
+                pass
+        else:
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            os.chmod(tmp, 0o666 & ~current_umask)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    # Best effort: make the rename itself durable.
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def _dialog_error(parent, message):
@@ -1189,8 +1240,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 path += ".md"
         text = self._get_text()
         try:
-            with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(text)
+            _atomic_write(path, text)
         except OSError as error:
             _dialog_error(self, "Could not save %s\n\n%s" % (path, error))
             return False
@@ -1216,8 +1266,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         name = os.path.basename(self.file_path) if self.file_path else "Untitled"
         document = build_export_html(os.path.splitext(name)[0], self._get_text())
         try:
-            with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(document)
+            _atomic_write(path, document)
         except OSError as error:
             _dialog_error(self, "Could not export %s\n\n%s" % (path, error))
 

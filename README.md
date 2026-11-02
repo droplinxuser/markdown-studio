@@ -45,7 +45,19 @@ gi.require_version('WebKit2','4.1'); print('ready')"
 
 This copies the app to `~/.local/opt/markdown-studio`, adds a
 `markdown-studio` launcher in `~/.local/bin`, and installs a desktop entry and
-icon, so the app also shows up in the GNOME application grid.
+icon, so the app also shows up in the GNOME application grid. It also makes
+Markdown Studio the explicit default handler for `text/markdown`, so a later
+editor install cannot silently take over the association.
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+This removes the launcher, app directory, desktop entry and icon. If Markdown
+Studio is still the default `text/markdown` handler, the uninstaller also drops
+that association.
 
 ## Run
 
@@ -80,6 +92,8 @@ python3 app.py notes.md         # run without installing
 - Relative image paths resolve against the document's folder.
 - The preview is rendered by WebKitGTK with a small GitHub-flavoured stylesheet;
   code blocks are highlighted by Pygments.
+- Saves are atomic: the document is written to a temporary file and renamed
+  into place, so a crash or power loss cannot leave a truncated file.
 
 ## Files
 
@@ -89,3 +103,4 @@ python3 app.py notes.md         # run without installing
 | `markdown-studio.svg` | application icon |
 | `markdown-studio.desktop` | desktop entry template |
 | `install.sh` | per-user installer |
+| `uninstall.sh` | per-user uninstaller |

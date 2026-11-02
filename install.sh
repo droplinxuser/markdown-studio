@@ -25,6 +25,14 @@ sed "s|@EXEC@|$bin_dir/markdown-studio|g" "$here/markdown-studio.desktop" \
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" >/dev/null 2>&1 || true
 
+# Pin the default handler explicitly.  Registering the MimeType only makes the
+# app available; without this it wins by fallback and another editor installed
+# later could silently take over.
+if command -v xdg-mime >/dev/null 2>&1; then
+  xdg-mime default markdown-studio.desktop text/markdown
+fi
+
 echo "Markdown Studio installed."
 echo "  launch:  markdown-studio [file.md]"
 echo "  menu:    search for \"Markdown Studio\""
+echo "  default: text/markdown"
