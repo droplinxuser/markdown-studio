@@ -7,27 +7,38 @@ bin_dir="$HOME/.local/bin"
 apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
-# If Markdown Studio is still the default handler for Markdown, drop that
-# association so the next editor installed can take over cleanly.
-if command -v xdg-mime >/dev/null 2>&1; then
-  if [ "$(xdg-mime query default text/markdown 2>/dev/null || true)" = "markdown-studio.desktop" ]; then
-    mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
-    if [ -f "$mimeapps" ]; then
-      python3 - "$mimeapps" <<'PY'
+# Drop Markdown Studio from the Markdown handler lists, preserving any other
+# handlers that share a line, so the next editor installed can take over
+# cleanly and no dangling association is left behind.
+mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+if [ -f "$mimeapps" ]; then
+  python3 - "$mimeapps" <<'PY'
 import re
 import sys
 
 path = sys.argv[1]
-pattern = re.compile(r"^\s*text/markdown\s*=\s*markdown-studio\.desktop\s*;?\s*$")
+pattern = re.compile(r"^(\s*text/markdown\s*=\s*)(.*)$")
 with open(path, encoding="utf-8") as handle:
     lines = handle.readlines()
-kept = [line for line in lines if not pattern.match(line)]
-if kept != lines:
+out = []
+changed = False
+for line in lines:
+    match = pattern.match(line)
+    if not match:
+        out.append(line)
+        continue
+    handlers = [item.strip() for item in match.group(2).split(";") if item.strip()]
+    kept = [item for item in handlers if item != "markdown-studio.desktop"]
+    if kept == handlers:
+        out.append(line)
+        continue
+    changed = True
+    if kept:
+        out.append(match.group(1) + ";".join(kept) + ";\n")
+if changed:
     with open(path, "w", encoding="utf-8") as handle:
-        handle.writelines(kept)
+        handle.writelines(out)
 PY
-    fi
-  fi
 fi
 
 rm -f "$bin_dir/markdown-studio"

@@ -284,9 +284,11 @@ _md = MarkdownIt(
     "commonmark",
     {"html": False, "linkify": True, "typographer": True, "breaks": False},
 )
-_md.enable(["table", "strikethrough", "linkify"])
+_md.enable(
+    ["table", "strikethrough", "linkify", "replacements", "smartquotes"]
+)
 
-_TASK_RE = re.compile(r"<li>\s*\[([ xX])\]\s+")
+_TASK_RE = re.compile(r"<li>\s*\[([ xX])\](?:\s+|(?=</li>))")
 
 
 def _highlight_code(code, lang, _attrs):
@@ -645,6 +647,28 @@ def _dialog_info(parent, message, title="Markdown Studio"):
     dialog.destroy()
 
 
+def _dialog_replace(parent, path):
+    """Ask before a Save/Export overwrites a path we appended an extension to."""
+    dialog = Gtk.MessageDialog(
+        transient_for=parent,
+        modal=True,
+        message_type=Gtk.MessageType.QUESTION,
+        buttons=Gtk.ButtonsType.NONE,
+        text="Replace existing file?",
+    )
+    dialog.format_secondary_text(
+        "“%s” already exists. Do you want to replace it?"
+        % os.path.basename(path)
+    )
+    dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    replace = dialog.add_button("Replace", Gtk.ResponseType.YES)
+    replace.get_style_context().add_class("destructive-action")
+    dialog.set_default_response(Gtk.ResponseType.CANCEL)
+    response = dialog.run()
+    dialog.destroy()
+    return response == Gtk.ResponseType.YES
+
+
 class Document:
     """One open file: its buffer, undo history, path and view state."""
 
@@ -710,6 +734,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._paned_ratio = 0.5
         self._last_paned_width = 0
         self._in_paned_resize = False
+        self._switching_document = False
 
         self.style_manager = Handy.StyleManager.get_default()
         self._theme_settings = None
@@ -824,6 +849,10 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.tab_scroll.set_hexpand(True)
         self.tab_scroll.set_size_request(-1, 34)
         self.tab_scroll.add(self.tabbar)
+        self._last_tab_view_width = 0
+        self.tab_scroll.connect(
+            "size-allocate", self._on_tab_view_size_allocate
+        )
 
         self.new_tab_button = Gtk.Button.new_from_icon_name(
             "list-add-symbolic", Gtk.IconSize.BUTTON
@@ -856,6 +885,9 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         title = Gtk.Button()
         title.set_relief(Gtk.ReliefStyle.NONE)
         title.set_focus_on_click(False)
+        # Keep every tab legible: without a minimum width a crowded tab bar
+        # squeezes each label down to an ellipsis instead of scrolling.
+        title.set_size_request(110, -1)
         title.get_style_context().add_class("tab-title")
         title.add(label)
         title.connect("clicked", lambda *_: self._select_document(doc))
@@ -1259,6 +1291,10 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._apply_theme_to_preview()
 
     def _on_editor_scroll(self, adjustment):
+        # Ignore adjustment changes caused by swapping buffers or restoring a
+        # remembered scroll position; they are not user scrolling.
+        if self._switching_document:
+            return
         span = adjustment.get_upper() - adjustment.get_page_size()
         if self.doc is not None:
             self.doc.scroll_ratio = (
@@ -1284,8 +1320,12 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if action.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED:
             uri = action.get_request().get_uri() or ""
             if uri.startswith("file://"):
-                local = GLib.filename_from_uri(uri.rsplit("#", 1)[0])[0]
-                if os.path.isfile(local) and local.lower().endswith(
+                target = uri.split("#", 1)[0].split("?", 1)[0]
+                try:
+                    local = GLib.filename_from_uri(target)[0]
+                except (TypeError, ValueError, GLib.Error):
+                    local = None
+                if local and os.path.isfile(local) and local.lower().endswith(
                     (".md", ".markdown", ".mdown", ".mkd", ".txt")
                 ):
                     decision.ignore()
@@ -1317,12 +1357,16 @@ class MarkdownWindow(Gtk.ApplicationWindow):
     def _set_preview_visible(self, show):
         self.webview.set_visible(show)
         if show:
-            GLib.idle_add(self._center_paned_once)
+            GLib.idle_add(self._apply_paned_ratio_once)
 
-    def _center_paned_once(self):
+    def _apply_paned_ratio_once(self):
         width = self.paned.get_allocated_width()
         if width > 0:
-            self.paned.set_position(width // 2)
+            self._in_paned_resize = True
+            try:
+                self.paned.set_position(int(width * self._paned_ratio))
+            finally:
+                self._in_paned_resize = False
         return False
 
     def _on_wrap_toggled(self, action, value):
@@ -1630,6 +1674,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             return
         self._flush_pending_autosave()
         self._store_active_view_state()
+        if self._scroll_timeout:
+            GLib.source_remove(self._scroll_timeout)
+            self._scroll_timeout = 0
+        target_ratio = doc.scroll_ratio
+        self._switching_document = True
         self.doc = doc
         self.buffer = doc.buffer
         self.textview.set_buffer(doc.buffer)
@@ -1637,20 +1686,40 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             self._last_dir = os.path.dirname(doc.path)
         self._preview_ready = False
         GLib.idle_add(self._init_preview)
-        GLib.idle_add(self._restore_editor_scroll, doc)
+        GLib.idle_add(self._restore_editor_scroll, doc, target_ratio, 0)
         self._update_header()
         self._update_stats()
         self._update_cursor()
         GLib.idle_add(self._scroll_tab_into_view, doc)
         self.textview.grab_focus()
 
-    def _scroll_tab_into_view(self, doc):
+    def _on_tab_view_size_allocate(self, _widget, allocation):
+        # Keep the active tab visible when the window becomes narrower.
+        if allocation.width != self._last_tab_view_width:
+            self._last_tab_view_width = allocation.width
+            if self.doc is not None:
+                GLib.idle_add(self._scroll_tab_into_view, self.doc)
+        return False
+
+    def _scroll_tab_into_view(self, doc, attempt=0):
         if doc is not self.doc or doc.tab_widget is None:
             return False
         allocation = doc.tab_widget.get_allocation()
         adjustment = self.tab_scroll.get_hadjustment()
         view_width = self.tab_scroll.get_allocated_width()
-        if view_width <= 0:
+        # Newly added tabs have no useful allocation until the next layout
+        # pass, and the adjustment may still describe the old tab strip.
+        # Retry briefly instead of giving up before the tab can be shown.
+        if (
+            view_width <= 1
+            or allocation.width <= 1
+            or allocation.x < 0
+            or allocation.x + allocation.width > adjustment.get_upper()
+        ):
+            if attempt < 60:
+                GLib.timeout_add(
+                    16, self._scroll_tab_into_view, doc, attempt + 1
+                )
             return False
         value = adjustment.get_value()
         if allocation.x < value:
@@ -1666,13 +1735,29 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         span = adjustment.get_upper() - adjustment.get_page_size()
         self.doc.scroll_ratio = adjustment.get_value() / span if span > 0 else 0.0
 
-    def _restore_editor_scroll(self, doc):
+    def _restore_editor_scroll(self, doc, ratio, attempt=0):
         if doc is not self.doc:
             return False
         adjustment = self.editor_scroll.get_vadjustment()
         span = adjustment.get_upper() - adjustment.get_page_size()
         if span > 0:
-            adjustment.set_value(doc.scroll_ratio * span)
+            adjustment.set_value(ratio * span)
+        doc.scroll_ratio = ratio
+        # The text view needs a layout pass before the adjustment describes
+        # the new buffer. Settle the position over the next few frames so a
+        # restored tab does not jump back to the top.
+        if attempt < 2:
+            GLib.timeout_add(
+                50 if attempt == 0 else 120,
+                self._restore_editor_scroll,
+                doc,
+                ratio,
+                attempt + 1,
+            )
+            return False
+        self._switching_document = False
+        if self._preview_ready:
+            self._run_js("window.setScrollRatio(%f);" % ratio)
         return False
 
     def _close_document(self, doc):
@@ -1683,6 +1768,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._flush_pending_autosave()
         if not self._maybe_save(doc):
             return
+        if self._grammar_doc is doc and self._grammar_dialog is not None:
+            self._close_grammar_dialog(self._grammar_dialog)
         index = self.docs.index(doc)
         self.docs.remove(doc)
         if doc.tab_widget is not None:
@@ -1739,6 +1826,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._update_stats()
         self._update_cursor()
         self.textview.scroll_to_iter(doc.buffer.get_start_iter(), 0.0, False, 0, 0)
+        doc.scroll_ratio = 0.0
         self._schedule_preview()
 
     def _open_path(self, path):
@@ -1748,7 +1836,9 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 self._select_document(doc)
                 return
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            # utf-8-sig transparently drops a leading BOM so the first
+            # heading is still parsed as Markdown.
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
                 text = handle.read()
         except OSError as error:
             _dialog_error(self, "Could not open %s\n\n%s" % (path, error))
@@ -1787,8 +1877,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             path = self._choose_save(doc)
             if not path:
                 return False
-            if not os.path.splitext(path)[1]:
-                path += ".md"
+            if not os.path.splitext(path)[1] and not os.path.isfile(path):
+                candidate = path + ".md"
+                if os.path.isfile(candidate) and not _dialog_replace(self, candidate):
+                    return False
+                path = candidate
         text = self._text_of(doc)
         try:
             _atomic_write(path, text)
@@ -1868,6 +1961,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._autosave_enabled = value.get_boolean()
         if self._autosave_enabled:
             self._schedule_autosave()
+        else:
+            self._cancel_pending_autosave()
 
     # ------------------------------------------------- spelling & grammar ---
 
@@ -1944,6 +2039,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 self._close_grammar_dialog(dialog)
             return False
         if dialog is not None and dialog is not self._grammar_dialog:
+            return False
+        if self._text_of(doc) != text:
+            # The document changed while the request was in flight. Showing
+            # the old offsets would highlight the wrong words, so discard the
+            # result and re-check an open review.
+            if doc is self.doc:
+                self._update_header()
+            if dialog is not None and dialog is self._grammar_dialog:
+                self._refresh_grammar_dialog(doc, dialog)
             return False
         if doc is self.doc:
             self._update_header()
@@ -2375,8 +2479,11 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         path = self._choose_export(doc)
         if not path:
             return
-        if not os.path.splitext(path)[1]:
-            path += ".html"
+        if not os.path.splitext(path)[1] and not os.path.isfile(path):
+            candidate = path + ".html"
+            if os.path.isfile(candidate) and not _dialog_replace(self, candidate):
+                return
+            path = candidate
         name = os.path.basename(doc.path) if doc.path else (doc.label or "Untitled")
         document = build_export_html(os.path.splitext(name)[0], self._text_of(doc))
         try:
@@ -2609,9 +2716,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if not self._first_map:
             return False
         self._first_map = False
-        width = self.paned.get_allocated_width()
-        if width > 0:
-            self.paned.set_position(width // 2)
+        self._apply_paned_ratio_once()
         return False
 
     def _on_window_size_allocate(self, _widget, _allocation):
@@ -2646,17 +2751,21 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    def _on_drag_data(self, _widget, _context, _x, _y, data, _info, _time):
-        uris = data.get_uris()
-        if not uris:
-            return
-        for uri in uris:
+    def _on_drag_data(self, _widget, context, _x, _y, data, _info, _time):
+        paths = []
+        for uri in data.get_uris() or []:
             try:
                 path = GLib.filename_from_uri(uri)[0]
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, GLib.Error):
+                # Not a usable local file (for example an http:// URI from a
+                # browser drag); ignore it rather than failing the whole drop.
                 continue
-            if os.path.isfile(path):
-                self._open_path(path)
+            if path and os.path.isfile(path):
+                paths.append(path)
+        if context is not None:
+            context.finish(bool(paths), False, _time)
+        for path in paths:
+            self._open_path(path)
 
     def _on_shortcuts(self, *_args):
         dialog = Gtk.MessageDialog(
@@ -2670,6 +2779,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             "Editing\n"
             "  Ctrl+B  Bold          Ctrl+I  Italic\n"
             "  Ctrl+E  Inline code   Ctrl+K  Link\n"
+            "  Ctrl+Shift+X  Strikethrough  Ctrl+Shift+I  Image\n"
             "  Ctrl+1/2/3  Headings  Ctrl+Shift+C  Code block\n"
             "  Ctrl+Shift+8/7  Lists Ctrl+Shift+9  Quote\n"
             "  Ctrl+Z / Ctrl+Shift+Z  Undo / Redo\n\n"
@@ -2738,9 +2848,11 @@ class MarkdownStudio(Gtk.Application):
             "win.h1": ["<Control>1"],
             "win.h2": ["<Control>2"],
             "win.h3": ["<Control>3"],
-            "win.quote": ["<Control><Shift>9"],
-            "win.ul": ["<Control><Shift>8"],
-            "win.ol": ["<Control><Shift>7"],
+            # Shifted number keys produce a different keyval (for example
+            # Ctrl+Shift+8 arrives as Ctrl+*), so bind the shifted symbol too.
+            "win.quote": ["<Control><Shift>9", "<Control><Shift>parenleft"],
+            "win.ul": ["<Control><Shift>8", "<Control><Shift>asterisk"],
+            "win.ol": ["<Control><Shift>7", "<Control><Shift>ampersand"],
             "win.table": [],
             "win.codeblock": ["<Control><Shift>c"],
             "win.preview": ["<Control><Shift>p"],
@@ -2798,6 +2910,9 @@ class MarkdownStudio(Gtk.Application):
 
 
 def main():
+    # Make the X11 WM_CLASS match the desktop entry's StartupWMClass (and the
+    # Wayland app ID), so the window groups with its launcher and icon.
+    Gdk.set_program_class(APP_ID)
     app = MarkdownStudio()
     return app.run(sys.argv)
 
