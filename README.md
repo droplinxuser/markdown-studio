@@ -13,7 +13,9 @@ half: a toolbar-driven editor on the left and a live preview on the right.
 - Automatic saving of named files while you type, plus a save-on-close pass so
   an accidental close does not lose changes.
 - Spelling and grammar review through LanguageTool (online; optional and only
-  runs when you choose **Tools → Check Spelling & Grammar**).
+  runs when you choose **Tools → Check Spelling & Grammar**). Suspected words
+  are underlined in the editor, and applying one suggestion refreshes the
+  review in place instead of closing it.
 - Live preview with GitHub-style typography, tables, task lists, syntax
   highlighting (Pygments) and local/remote images.
 - Toolbar for bold, italic, strikethrough, inline code, headings, quotes, lists,

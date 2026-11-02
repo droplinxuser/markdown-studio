@@ -39,7 +39,7 @@ from pygments.util import ClassNotFound
 
 APP_ID = "io.github.markdownstudio.MarkdownStudio"
 APP_NAME = "Markdown Studio"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "markdown-studio.svg")
 
@@ -353,80 +353,139 @@ def build_export_html(title, text):
 # ------------------------------------------------------------------- gtk -----
 
 APP_CSS = b"""
+window { background: @theme_bg_color; }
+
 .tabstrip {
-  background: @theme_bg_color;
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@theme_fg_color, 0.045),
+    alpha(@theme_fg_color, 0.0)
+  );
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.09);
 }
+.tabbar { padding: 0; }
 .tabbar .tab {
-  min-height: 30px;
-  margin: 0 2px;
+  min-height: 28px;
+  margin: 3px 1px;
   padding: 0 1px;
-  border-radius: 8px 8px 0 0;
-  border: 1px solid alpha(@theme_fg_color, 0.10);
-  border-bottom: none;
-  background: alpha(@theme_fg_color, 0.04);
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+.tabbar .tab:hover {
+  background: alpha(@theme_fg_color, 0.07);
 }
 .tabbar .tab.active {
-  background: @theme_base_color;
-  border-color: alpha(@theme_fg_color, 0.18);
+  background: alpha(@theme_selected_bg_color, 0.16);
+  border-color: alpha(@theme_selected_bg_color, 0.32);
 }
 .tabbar .tab-title {
-  padding: 4px 7px 3px 10px;
+  padding: 3px 6px 3px 10px;
   border: none;
   background: transparent;
   box-shadow: none;
-  border-radius: 8px 0 0 0;
+  border-radius: 8px 0 0 8px;
 }
 .tabbar .tab-title label {
   font-size: 12px;
-  color: alpha(@theme_fg_color, 0.72);
+  color: alpha(@theme_fg_color, 0.65);
+  transition: color 130ms ease;
+}
+.tabbar .tab:hover .tab-title label {
+  color: alpha(@theme_fg_color, 0.88);
 }
 .tabbar .tab.active .tab-title label {
-  color: @theme_fg_color;
+  color: @theme_selected_bg_color;
   font-weight: 600;
 }
 .tabbar .tab-close {
-  min-width: 20px;
-  min-height: 20px;
+  min-width: 18px;
+  min-height: 18px;
   padding: 0;
-  margin: 4px 4px 4px 0;
+  margin: 5px 5px 5px 0;
   border: none;
   background: transparent;
   box-shadow: none;
-  border-radius: 5px;
-  opacity: 0.6;
+  border-radius: 999px;
+  opacity: 0.45;
+  transition: background 130ms ease, opacity 130ms ease;
+}
+.tabbar .tab:hover .tab-close,
+.tabbar .tab.active .tab-close {
+  opacity: 0.8;
 }
 .tabbar .tab-close:hover {
-  background: alpha(@theme_fg_color, 0.12);
+  background: alpha(@theme_fg_color, 0.13);
   opacity: 1;
 }
-.grammar-list row {
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.08);
-}
-.grammar-list row:last-child {
-  border-bottom: none;
-}
-.formatbar {
-  background: @theme_bg_color;
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
-}
-.formatbar flowboxchild { padding: 0; }
-button.tool {
+button.new-tab {
+  min-width: 26px;
   min-height: 26px;
-  min-width: 22px;
-  padding: 3px 5px;
-  border-radius: 6px;
+  padding: 0;
   border: none;
+  border-radius: 999px;
   background: transparent;
   box-shadow: none;
-  color: alpha(@theme_fg_color, 0.86);
+  color: alpha(@theme_fg_color, 0.62);
+  transition: background 130ms ease, color 130ms ease;
 }
-button.tool:hover {
+button.new-tab:hover {
   background: alpha(@theme_fg_color, 0.09);
   color: @theme_fg_color;
 }
+button.new-tab:active {
+  background: alpha(@theme_selected_bg_color, 0.18);
+  color: @theme_selected_bg_color;
+}
+
+.grammar-list {
+  background: @theme_base_color;
+  border-radius: 10px;
+}
+.grammar-list row {
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.07);
+  padding: 0;
+}
+.grammar-list row:last-child { border-bottom: none; }
+.grammar-row { background: transparent; }
+.grammar-context { color: alpha(@theme_fg_color, 0.68); }
+.grammar-count { font-size: 14px; }
+.grammar-scroll { border-radius: 10px; }
+
+.formatbar {
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@theme_fg_color, 0.018),
+    alpha(@theme_fg_color, 0.0)
+  );
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.09);
+  padding: 3px 4px;
+}
+.formatbar flowboxchild { padding: 0; }
+.formatbar .tool-group {
+  background: alpha(@theme_fg_color, 0.035);
+  border: 1px solid alpha(@theme_fg_color, 0.05);
+  border-radius: 9px;
+  padding: 1px 2px;
+}
+button.tool {
+  min-height: 26px;
+  min-width: 24px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  color: alpha(@theme_fg_color, 0.82);
+  transition: background 120ms ease, color 120ms ease;
+}
+button.tool:hover {
+  background: alpha(@theme_fg_color, 0.10);
+  color: @theme_fg_color;
+}
 button.tool:active, button.tool:checked {
-  background: alpha(@theme_selected_bg_color, 0.22);
+  background: alpha(@theme_selected_bg_color, 0.18);
   color: @theme_selected_bg_color;
 }
 button.hlabel {
@@ -450,23 +509,50 @@ button.glyph.mono {
   font-family: "Ubuntu Mono", "JetBrains Mono", "DejaVu Sans Mono", monospace;
   font-size: 14px;
   background: @theme_base_color;
+  color: @theme_fg_color;
 }
 .statusbar {
-  border-top: 1px solid alpha(@theme_fg_color, 0.10);
-  background: @theme_bg_color;
+  border-top: 1px solid alpha(@theme_fg_color, 0.08);
+  background-image: linear-gradient(
+    to bottom,
+    alpha(@theme_fg_color, 0.0),
+    alpha(@theme_fg_color, 0.025)
+  );
 }
 .statusbar label {
   font-size: 11px;
-  color: alpha(@theme_fg_color, 0.62);
+  color: alpha(@theme_fg_color, 0.60);
 }
 paned > separator {
-  min-width: 1px;
-  min-height: 1px;
-  background: alpha(@theme_fg_color, 0.12);
+  min-width: 5px;
+  min-height: 5px;
+  background-image: linear-gradient(
+    to right,
+    alpha(@theme_fg_color, 0.0) 0,
+    alpha(@theme_fg_color, 0.0) 2px,
+    alpha(@theme_fg_color, 0.12) 2px,
+    alpha(@theme_fg_color, 0.12) 3px,
+    alpha(@theme_fg_color, 0.0) 3px
+  );
 }
-paned > separator:hover { background: alpha(@theme_fg_color, 0.22); }
+paned > separator:hover {
+  background-image: linear-gradient(
+    to right,
+    alpha(@theme_fg_color, 0.0) 0,
+    alpha(@theme_fg_color, 0.0) 1px,
+    alpha(@theme_selected_bg_color, 0.55) 1px,
+    alpha(@theme_selected_bg_color, 0.55) 4px,
+    alpha(@theme_fg_color, 0.0) 4px
+  );
+}
+headerbar { border-bottom: 1px solid alpha(@theme_fg_color, 0.06); }
 headerbar .title-label { font-weight: 700; font-size: 14px; }
-headerbar .subtitle-label { font-size: 10.5px; color: alpha(@theme_fg_color, 0.6); }
+headerbar .subtitle-label { font-size: 10.5px; color: alpha(@theme_fg_color, 0.58); }
+headerbar button {
+  min-height: 28px;
+  min-width: 28px;
+  border-radius: 7px;
+}
 """
 
 
@@ -596,6 +682,13 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._autosave_enabled = True
         self._grammar_checking = False
         self._grammar_dialog = None
+        self._grammar_list = None
+        self._grammar_count = None
+        self._grammar_detail = None
+        self._grammar_fix_button = None
+        self._grammar_doc = None
+        self._grammar_text = ""
+        self._grammar_matches = []
         self._first_map = True
         self._applying_history = False
         self.docs = []
@@ -610,7 +703,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._build_menu()
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        root.pack_start(self.tab_scroll, False, False, 0)
+        root.pack_start(self.tab_strip, False, False, 0)
         root.pack_start(self.paned, True, True, 0)
         root.pack_start(self.statusbar, False, False, 0)
         self.add(root)
@@ -689,20 +782,38 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self.set_titlebar(self.header)
 
     def _build_tabs(self):
-        self.tabbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.tabbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         self.tabbar.get_style_context().add_class("tabbar")
-        self.tabbar.set_margin_start(6)
-        self.tabbar.set_margin_end(6)
-        self.tabbar.set_margin_top(5)
-        self.tabbar.set_valign(Gtk.Align.END)
+        self.tabbar.set_margin_start(1)
+        self.tabbar.set_margin_end(1)
+        self.tabbar.set_valign(Gtk.Align.CENTER)
 
         self.tab_scroll = Gtk.ScrolledWindow()
         self.tab_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         self.tab_scroll.set_overlay_scrolling(True)
         self.tab_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        self.tab_scroll.get_style_context().add_class("tabstrip")
-        self.tab_scroll.set_size_request(-1, 39)
+        self.tab_scroll.set_hexpand(True)
+        self.tab_scroll.set_size_request(-1, 34)
         self.tab_scroll.add(self.tabbar)
+
+        self.new_tab_button = Gtk.Button.new_from_icon_name(
+            "list-add-symbolic", Gtk.IconSize.BUTTON
+        )
+        self.new_tab_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.new_tab_button.set_tooltip_text("New tab (Ctrl+N)")
+        self.new_tab_button.set_action_name("win.new")
+        self.new_tab_button.set_focus_on_click(False)
+        self.new_tab_button.set_valign(Gtk.Align.CENTER)
+        self.new_tab_button.get_style_context().add_class("new-tab")
+
+        self.tab_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.tab_strip.get_style_context().add_class("tabstrip")
+        self.tab_strip.set_margin_start(8)
+        self.tab_strip.set_margin_end(8)
+        self.tab_strip.set_margin_top(6)
+        self.tab_strip.set_margin_bottom(3)
+        self.tab_strip.pack_start(self.tab_scroll, True, True, 0)
+        self.tab_strip.pack_end(self.new_tab_button, False, False, 0)
 
     def _build_tab(self, doc):
         tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -836,6 +947,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         ]
         for group in groups:
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
+            box.get_style_context().add_class("tool-group")
             for button in group:
                 box.pack_start(button, False, False, 0)
             flow.add(box)
@@ -1436,7 +1548,23 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._update_header()
         self._update_stats()
         self._update_cursor()
+        GLib.idle_add(self._scroll_tab_into_view, doc)
         self.textview.grab_focus()
+
+    def _scroll_tab_into_view(self, doc):
+        if doc is not self.doc or doc.tab_widget is None:
+            return False
+        allocation = doc.tab_widget.get_allocation()
+        adjustment = self.tab_scroll.get_hadjustment()
+        view_width = self.tab_scroll.get_allocated_width()
+        if view_width <= 0:
+            return False
+        value = adjustment.get_value()
+        if allocation.x < value:
+            adjustment.set_value(allocation.x)
+        elif allocation.x + allocation.width > value + view_width:
+            adjustment.set_value(allocation.x + allocation.width - view_width)
+        return False
 
     def _store_active_view_state(self):
         if self.doc is None:
@@ -1496,6 +1624,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         doc.buffer.set_text(text)
         doc.buffer.place_cursor(doc.buffer.get_start_iter())
         self._loading = False
+        self._clear_grammar_highlights(doc)
         doc.path = path
         doc.label = None
         if path:
@@ -1659,6 +1788,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if not text.strip():
             _dialog_info(self, "There is no text to check.", "Nothing to check")
             return
+        self._clear_grammar_highlights(self.doc)
         checked = text[:GRAMMAR_MAX_CHARS]
         self._grammar_checking = True
         self.state_label.set_text("Checking spelling & grammar…")
@@ -1700,7 +1830,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             connection.close()
         return json.loads(raw.decode("utf-8"))
 
-    def _grammar_worker(self, doc, text, checked):
+    def _grammar_worker(self, doc, text, checked, dialog=None):
         data = None
         error = None
         try:
@@ -1710,14 +1840,32 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             data = self._post_grammar(payload)
         except Exception as error_object:  # network, TLS, JSON, rate limit…
             error = str(error_object) or error_object.__class__.__name__
-        GLib.idle_add(self._show_grammar_results, doc, text, checked, data, error)
+        GLib.idle_add(
+            self._show_grammar_results, doc, text, checked, data, error, dialog
+        )
 
-    def _show_grammar_results(self, doc, text, checked, data, error):
+    def _show_grammar_results(self, doc, text, checked, data, error, dialog=None):
         self._grammar_checking = False
         if doc not in self.docs:
+            if dialog is not None:
+                self._close_grammar_dialog(dialog)
+            return False
+        if dialog is not None and dialog is not self._grammar_dialog:
             return False
         if doc is self.doc:
             self._update_header()
+        if dialog is not None:
+            if error:
+                self._set_grammar_status(
+                    "Check failed", "Could not reach the grammar service: %s" % error
+                )
+                self._clear_grammar_list()
+                return False
+            matches = data.get("matches", []) if data else []
+            matches = [dict(match) for match in matches]
+            self._normalise_grammar_offsets(checked, matches)
+            self._render_grammar_matches(doc, checked, matches, text)
+            return False
         if error:
             _dialog_error(
                 self,
@@ -1738,72 +1886,149 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._build_grammar_dialog(doc, text, checked, matches)
         return False
 
+    def _set_grammar_status(self, count, detail):
+        if self._grammar_count is not None:
+            self._grammar_count.set_markup("<b>%s</b>" % GLib.markup_escape_text(count))
+        if self._grammar_detail is not None:
+            self._grammar_detail.set_text(detail)
+
+    def _clear_grammar_list(self):
+        if self._grammar_list is None:
+            return
+        for child in self._grammar_list.get_children():
+            self._grammar_list.remove(child)
+            child.destroy()
+        if self._grammar_fix_button is not None:
+            self._grammar_fix_button.set_sensitive(False)
+
+    def _render_grammar_matches(self, doc, checked, matches, full_text):
+        self._grammar_matches = matches
+        self._grammar_text = full_text
+        self._grammar_doc = doc
+        if self._grammar_list is None:
+            return
+        self._clear_grammar_list()
+        self._highlight_grammar_issues(doc, matches)
+        if matches:
+            self._set_grammar_status(
+                "%d issue%s found"
+                % (len(matches), "" if len(matches) == 1 else "s"),
+                self._grammar_detail_text(len(full_text), len(checked)),
+            )
+        else:
+            self._set_grammar_status(
+                "No issues found",
+                self._grammar_detail_text(len(full_text), len(checked)),
+            )
+            empty = Gtk.ListBoxRow()
+            label = Gtk.Label(label="No spelling or grammar issues were found.")
+            label.set_margin_top(24)
+            label.set_margin_bottom(24)
+            label.get_style_context().add_class("dim-label")
+            empty.add(label)
+            self._grammar_list.add(empty)
+        for match in matches:
+            self._grammar_list.add(
+                self._build_issue_row(doc, checked, full_text, match)
+            )
+        if self._grammar_fix_button is not None:
+            self._grammar_fix_button.set_sensitive(
+                any(match.get("replacements") for match in matches)
+            )
+        self._grammar_list.show_all()
+
+    def _grammar_detail_text(self, text_length, checked_length):
+        host = urllib.parse.urlparse(GRAMMAR_URL).netloc or GRAMMAR_URL
+        detail = "Checked with LanguageTool. Text is sent to %s." % host
+        if text_length > checked_length:
+            detail += " Only the first %s characters were checked." % format(
+                checked_length, ","
+            )
+        return detail
+
     def _build_grammar_dialog(self, doc, text, checked, matches):
         dialog = Gtk.Dialog(
             title="Spelling & Grammar",
             transient_for=self,
             modal=False,
         )
-        dialog.set_default_size(780, 560)
+        dialog.set_default_size(820, 600)
         dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        fixable = any(match.get("replacements") for match in matches)
-        if fixable:
-            dialog.add_button("Fix All", Gtk.ResponseType.APPLY)
+        self._grammar_fix_button = dialog.add_button(
+            "Fix All", Gtk.ResponseType.APPLY
+        )
 
         content = dialog.get_content_area()
-        content.set_spacing(8)
-        content.set_margin_start(12)
-        content.set_margin_end(12)
-        content.set_margin_top(10)
-        content.set_margin_bottom(8)
+        content.set_spacing(10)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_margin_top(14)
+        content.set_margin_bottom(10)
 
-        count_label = Gtk.Label()
-        count_label.set_markup(
-            "<b>%d issue%s found</b>" % (len(matches), "" if len(matches) == 1 else "s")
-        )
-        count_label.set_xalign(0)
-        content.pack_start(count_label, False, False, 0)
-        host = urllib.parse.urlparse(GRAMMAR_URL).netloc or GRAMMAR_URL
-        detail = "Checked with LanguageTool. Text is sent to %s." % host
-        if len(text) > len(checked):
-            detail += " Only the first %s characters were checked." % format(
-                len(checked), ","
-            )
-        detail_label = Gtk.Label(label=detail)
-        detail_label.set_xalign(0)
-        detail_label.set_line_wrap(True)
-        detail_label.get_style_context().add_class("dim-label")
-        content.pack_start(detail_label, False, False, 0)
+        header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._grammar_count = Gtk.Label()
+        self._grammar_count.set_xalign(0)
+        self._grammar_count.get_style_context().add_class("grammar-count")
+        self._grammar_detail = Gtk.Label()
+        self._grammar_detail.set_xalign(0)
+        self._grammar_detail.set_line_wrap(True)
+        self._grammar_detail.get_style_context().add_class("dim-label")
+        header.pack_start(self._grammar_count, False, False, 0)
+        header.pack_start(self._grammar_detail, False, False, 0)
+        content.pack_start(header, False, False, 0)
 
         listbox = Gtk.ListBox()
         listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         listbox.get_style_context().add_class("grammar-list")
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.set_shadow_type(Gtk.ShadowType.NONE)
+        scroller.get_style_context().add_class("grammar-scroll")
         scroller.add(listbox)
         content.pack_start(scroller, True, True, 0)
 
-        for match in matches:
-            listbox.add(self._build_issue_row(doc, checked, text, match, dialog))
-
-        dialog.connect(
-            "response",
-            lambda dlg, response: self._on_grammar_response(
-                dlg, response, doc, text, matches
-            ),
-        )
-        dialog.connect("destroy", self._on_grammar_destroy)
+        self._grammar_list = listbox
+        self._grammar_doc = doc
         self._grammar_dialog = dialog
+        dialog.connect("response", self._on_grammar_response)
+        dialog.connect("destroy", self._on_grammar_destroy)
+        self._render_grammar_matches(doc, checked, matches, text)
         dialog.show_all()
 
-    def _build_issue_row(self, doc, text, full_text, match, dialog):
+    def _refresh_grammar_dialog(self, doc, dialog):
+        if dialog is None or dialog is not self._grammar_dialog:
+            return
+        if doc not in self.docs:
+            self._close_grammar_dialog(dialog)
+            return
+        self._grammar_doc = doc
+        text = self._text_of(doc)
+        if not text.strip():
+            self._render_grammar_matches(doc, "", [], text)
+            return
+        checked = text[:GRAMMAR_MAX_CHARS]
+        self._grammar_checking = True
+        if doc is self.doc:
+            self.state_label.set_text("Checking spelling & grammar…")
+        self._set_grammar_status(
+            "Checking…", "Re-checking after applying a fix…"
+        )
+        self._clear_grammar_list()
+        worker = threading.Thread(
+            target=self._grammar_worker,
+            args=(doc, text, checked, dialog),
+            daemon=True,
+        )
+        worker.start()
+
+    def _build_issue_row(self, doc, text, full_text, match):
         row = Gtk.ListBoxRow()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
+        row.get_style_context().add_class("grammar-row")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_start(14)
+        box.set_margin_end(14)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
 
         message = Gtk.Label()
         message.set_markup(
@@ -1817,6 +2042,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         context.set_markup(self._issue_markup(text, match))
         context.set_xalign(0)
         context.set_line_wrap(True)
+        context.get_style_context().add_class("grammar-context")
         box.pack_start(context, False, False, 0)
 
         replacements = [
@@ -1824,19 +2050,20 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             for item in (match.get("replacements") or [])
             if item.get("value")
         ]
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        controls.set_margin_top(3)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.set_margin_top(4)
         if replacements:
             combo = Gtk.ComboBoxText()
             for value in replacements[:10]:
                 combo.append_text(value)
             combo.set_active(0)
+            combo.set_hexpand(True)
             apply = Gtk.Button(label="Apply")
             apply.get_style_context().add_class("suggested-action")
             apply.connect(
                 "clicked",
                 lambda *_: self._apply_grammar_fix(
-                    doc, full_text, match, combo.get_active_text(), dialog
+                    doc, full_text, match, combo.get_active_text()
                 ),
             )
             controls.pack_start(combo, True, True, 0)
@@ -1850,6 +2077,49 @@ class MarkdownWindow(Gtk.ApplicationWindow):
 
         row.add(box)
         return row
+
+    def _grammar_tag(self, doc):
+        table = doc.buffer.get_tag_table()
+        tag = table.lookup("grammar-error")
+        if tag is None:
+            tag = doc.buffer.create_tag("grammar-error")
+            tag.set_property("underline", Pango.Underline.ERROR)
+            underline = Gdk.RGBA()
+            underline.parse("#e5484d")
+            tag.set_property("underline-rgba", underline)
+            background = Gdk.RGBA()
+            background.parse("rgba(229, 72, 77, 0.10)")
+            tag.set_property("background-rgba", background)
+        return tag
+
+    def _clear_grammar_highlights(self, doc):
+        if doc is None:
+            return
+        tag = doc.buffer.get_tag_table().lookup("grammar-error")
+        if tag is None:
+            return
+        start, end = doc.buffer.get_bounds()
+        doc.buffer.remove_tag(tag, start, end)
+
+    def _highlight_grammar_issues(self, doc, matches):
+        self._clear_grammar_highlights(doc)
+        if not matches:
+            return
+        tag = self._grammar_tag(doc)
+        length = doc.buffer.get_char_count()
+        for match in matches:
+            try:
+                offset = int(match.get("offset", -1))
+                span = int(match.get("length", 0))
+            except (TypeError, ValueError):
+                continue
+            if offset < 0 or span <= 0 or offset + span > length:
+                continue
+            doc.buffer.apply_tag(
+                tag,
+                doc.buffer.get_iter_at_offset(offset),
+                doc.buffer.get_iter_at_offset(offset + span),
+            )
 
     def _normalise_grammar_offsets(self, text, matches):
         """LanguageTool counts UTF-16 units; GTK uses Unicode code points."""
@@ -1895,15 +2165,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             "…" if end < len(text) else "",
         )
 
-    def _apply_grammar_fix(self, doc, expected_text, match, replacement, dialog):
+    def _apply_grammar_fix(self, doc, expected_text, match, replacement):
         if not replacement:
             return
-        if doc not in self.docs or self._text_of(doc) != expected_text:
-            _dialog_error(
-                self,
-                "The document changed since the check. Run the check again.",
-            )
+        dialog = self._grammar_dialog
+        if doc not in self.docs:
             self._close_grammar_dialog(dialog)
+            return
+        if self._text_of(doc) != expected_text:
+            self._refresh_grammar_dialog(doc, dialog)
             return
         try:
             offset = int(match.get("offset", -1))
@@ -1911,7 +2181,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         except (TypeError, ValueError):
             offset, length = -1, 0
         if offset < 0 or offset + length > len(expected_text):
-            self._close_grammar_dialog(dialog)
+            self._refresh_grammar_dialog(doc, dialog)
             return
         self._select_document(doc)
         buffer = doc.buffer
@@ -1922,15 +2192,17 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
         buffer.insert(buffer.get_iter_at_offset(offset), replacement)
         buffer.end_user_action()
-        self._close_grammar_dialog(dialog)
+        if dialog is not None and dialog is self._grammar_dialog:
+            self._refresh_grammar_dialog(doc, dialog)
 
     def _apply_all_grammar_fixes(self, doc, expected_text, matches, dialog):
-        if doc not in self.docs or self._text_of(doc) != expected_text:
-            _dialog_error(
-                self,
-                "The document changed since the check. Run the check again.",
-            )
+        if dialog is None or dialog is not self._grammar_dialog:
+            return
+        if doc not in self.docs:
             self._close_grammar_dialog(dialog)
+            return
+        if self._text_of(doc) != expected_text:
+            self._refresh_grammar_dialog(doc, dialog)
             return
         fixes = []
         for match in matches:
@@ -1946,7 +2218,6 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 continue
             fixes.append((offset, length, replacements[0].get("value", "")))
         if not fixes:
-            self._close_grammar_dialog(dialog)
             return
         fixes.sort(key=lambda item: item[0])
         filtered = []
@@ -1966,22 +2237,44 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             )
             buffer.insert(buffer.get_iter_at_offset(offset), replacement)
         buffer.end_user_action()
-        self._close_grammar_dialog(dialog)
+        self._refresh_grammar_dialog(doc, dialog)
 
-    def _on_grammar_response(self, dialog, response, doc, text, matches):
+    def _on_grammar_response(self, dialog, response):
+        if dialog is not self._grammar_dialog:
+            dialog.destroy()
+            return
         if response == Gtk.ResponseType.APPLY:
-            self._apply_all_grammar_fixes(doc, text, matches, dialog)
+            doc = self._grammar_doc
+            if doc is None:
+                return
+            self._apply_all_grammar_fixes(
+                doc, self._grammar_text, list(self._grammar_matches), dialog
+            )
         else:
             self._close_grammar_dialog(dialog)
 
     def _close_grammar_dialog(self, dialog):
         if self._grammar_dialog is dialog:
             self._grammar_dialog = None
+            self._grammar_list = None
+            self._grammar_count = None
+            self._grammar_detail = None
+            self._grammar_fix_button = None
+            self._grammar_doc = None
+            self._grammar_text = ""
+            self._grammar_matches = []
         if dialog is not None:
             dialog.destroy()
 
     def _on_grammar_destroy(self, *_args):
         self._grammar_dialog = None
+        self._grammar_list = None
+        self._grammar_count = None
+        self._grammar_detail = None
+        self._grammar_fix_button = None
+        self._grammar_doc = None
+        self._grammar_text = ""
+        self._grammar_matches = []
 
     def _on_export(self, *_args):
         doc = self.doc
@@ -2140,6 +2433,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             return
         doc = self.doc
         current = self._text_of(doc)
+        self._clear_grammar_highlights(doc)
         if not self._applying_history and current != doc.history_text:
             now = GLib.get_monotonic_time()
             if not doc.undo_stack or now - doc.group_start > 1_200_000:
