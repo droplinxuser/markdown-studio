@@ -39,7 +39,7 @@ from pygments.util import ClassNotFound
 
 APP_ID = "io.github.markdownstudio.MarkdownStudio"
 APP_NAME = "Markdown Studio"
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "markdown-studio.svg")
 
@@ -712,7 +712,18 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._in_paned_resize = False
 
         self.style_manager = Handy.StyleManager.get_default()
-        self._apply_system_theme()
+        self._theme_settings = None
+        try:
+            self._theme_settings = Gio.Settings.new("org.gnome.desktop.interface")
+            self._theme_settings.connect(
+                "changed::color-scheme", self._sync_system_theme
+            )
+            self._theme_settings.connect(
+                "changed::gtk-theme", self._sync_system_theme
+            )
+        except GLib.Error:
+            self._theme_settings = None
+        self._sync_system_theme()
         self.style_manager.connect("notify::dark", self._on_theme_changed)
 
         self._build_actions()
@@ -1188,11 +1199,42 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if self._preview_ready:
             self._run_js("window.setTheme(%s);" % ("true" if dark else "false"))
 
-    def _apply_system_theme(self):
-        # Handy.StyleManager owns the GTK dark preference and follows the
-        # desktop colour scheme automatically; only derived colours need a
-        # refresh here.
+    def _detect_system_dark(self):
+        env_theme = os.environ.get("GTK_THEME", "").lower()
+        if "dark" in env_theme:
+            return True
+        if "light" in env_theme:
+            return False
+        scheme = ""
+        theme = ""
+        if self._theme_settings is not None:
+            try:
+                scheme = self._theme_settings.get_string("color-scheme").lower()
+                theme = self._theme_settings.get_string("gtk-theme").lower()
+            except (GLib.Error, KeyError):
+                pass
+        if scheme in ("prefer-dark", "dark"):
+            return True
+        if scheme in ("prefer-light", "light"):
+            return False
+        if "dark" in theme:
+            return True
+        if theme:
+            return False
+        return self.style_manager.get_dark()
+
+    def _sync_system_theme(self, *_args):
+        dark = self._detect_system_dark()
+        scheme = (
+            Handy.ColorScheme.FORCE_DARK
+            if dark
+            else Handy.ColorScheme.FORCE_LIGHT
+        )
+        if self.style_manager.get_color_scheme() != scheme:
+            self.style_manager.set_color_scheme(scheme)
         self._update_grammar_tag_colors()
+        if hasattr(self, "webview"):
+            self._apply_theme_to_preview()
 
     def _grammar_colors(self):
         if self.style_manager.get_dark():
@@ -1213,7 +1255,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             tag.set_property("background-rgba", fill)
 
     def _on_theme_changed(self, *_args):
-        self._apply_system_theme()
+        self._update_grammar_tag_colors()
         self._apply_theme_to_preview()
 
     def _on_editor_scroll(self, adjustment):

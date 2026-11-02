@@ -116,6 +116,9 @@ python3 app.py notes.md         # run without installing
   paid account, so LanguageTool is used instead. Set
   `MARKDOWN_STUDIO_GRAMMAR_URL` and `MARKDOWN_STUDIO_GRAMMAR_LANGUAGE` to use a
   self-hosted LanguageTool server or another language.
+- Light/dark mode follows `org.gnome.desktop.interface color-scheme` and
+  `gtk-theme` live, so switching the desktop appearance updates the app
+  immediately.
 
 ## Files
 
