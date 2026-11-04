@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Markdown Studio — a small, fast Markdown editor for the Linux desktop.
+Markdown Studio — a small, fast Markdown editor for macOS.
 
-Layout: toolbar + editor on the left, live preview on the right.
-Renderer: markdown-it-py + Pygments. Preview: WebKitGTK.
+Layout: toolbar + tabs above the editor, live preview beside it.
+Renderer: markdown-it-py + Pygments. Preview: Qt WebEngine (WebKit-derived).
+Framework: PySide6 (Qt 6).
 
-Dependencies (all shipped with Ubuntu): python3-gi, gir1.2-gtk-3.0,
-gir1.2-handy-1, gir1.2-webkit2-4.1, python3-markdown-it, python3-pygments.
+Dependencies: PySide6, markdown-it-py, pygments.
 """
 
 import html
@@ -17,19 +17,69 @@ import os
 import re
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
 import urllib.parse
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-gi.require_version("Handy", "1")
-gi.require_version("WebKit2", "4.1")
-
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Handy, Pango, WebKit2
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QPoint,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QFontDatabase,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QTextCharFormat,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProxyStyle,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QStyle,
+    QTabBar,
+    QTextBrowser,
+    QTextEdit,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from markdown_it import MarkdownIt
 from pygments import highlight as pygments_highlight
@@ -37,11 +87,39 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name
 from pygments.util import ClassNotFound
 
+# Qt WebEngine requires this attribute before the QApplication is created.
+QCoreApplication.setAttribute(
+    Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True
+)
+
 APP_ID = "io.github.markdownstudio.MarkdownStudio"
 APP_NAME = "Markdown Studio"
-APP_VERSION = "1.4"
+APP_VERSION = "2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "markdown-studio.svg")
+TOOLBAR_ICON_DIR = os.path.join(BASE_DIR, "assets", "toolbar")
+MARKDOWN_EXTENSIONS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
+TOOLBAR_LABELS = {
+    "new": "New",
+    "open": "Open",
+    "save": "Save",
+    "undo": "Undo",
+    "redo": "Redo",
+    "bold": "Bold",
+    "italic": "Italic",
+    "strike": "Strikethrough",
+    "code": "Inline Code",
+    "ul": "Bulleted List",
+    "ol": "Numbered List",
+    "task": "Task List",
+    "quote": "Block Quote",
+    "link": "Link",
+    "image": "Image",
+    "table": "Table",
+    "codeblock": "Code Block",
+    "hr": "Horizontal Rule",
+    "preview": "Preview",
+}
 
 # LanguageTool provides free spelling and grammar checks. QuillBot does not
 # offer a public API without a paid account, so LanguageTool is the default.
@@ -83,6 +161,7 @@ class _IPv4HTTPSConnection(_IPv4HTTPConnection, http.client.HTTPSConnection):
         context = self._context or ssl.create_default_context()
         self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
 
+
 WELCOME = """# Welcome to Markdown Studio
 
 A quiet place to write Markdown, with a live preview that updates as you type.
@@ -91,9 +170,9 @@ A quiet place to write Markdown, with a live preview that updates as you type.
 
 - Write on the left, watch the result on the right.
 - Use the **toolbar** above the editor, or the keyboard shortcuts, to format.
-- Press **Ctrl+S** to save and **Ctrl+O** to open a file. Open several files
+- Press **⌘S** to save and **⌘O** to open a file. Open several files
   at once and switch between them with the tabs at the top.
-- Press **Ctrl+N** for a new tab, **Ctrl+W** to close one, and **Ctrl+Tab**
+- Press **⌘N** for a new tab, **⌘W** to close one, and **⌃⇥**
   to move between tabs.
 - Files with a name are saved automatically as you type.
 - Use **Tools → Check Spelling & Grammar** for a spelling and grammar review.
@@ -103,9 +182,8 @@ A quiet place to write Markdown, with a live preview that updates as you type.
 
 ## Try the formatting
 
-Select some text and press **Ctrl+B** for bold, **Ctrl+I** for italic, or
-**Ctrl+K** to turn it into a link. Headings are **Ctrl+1**, **Ctrl+2** and
-**Ctrl+3**.
+Select some text and press **⌘B** for bold, **⌘I** for italic, or
+**⌘K** to turn it into a link. Headings are **⌘1**, **⌘2** and **⌘3**.
 
 ```python
 def greet(name):
@@ -116,10 +194,10 @@ print(greet("writer"))
 
 | Shortcut | Action        |
 | -------- | ------------- |
-| Ctrl+B   | Bold          |
-| Ctrl+I   | Italic        |
-| Ctrl+K   | Insert link   |
-| Ctrl+E   | Inline code   |
+| ⌘B       | Bold          |
+| ⌘I       | Italic        |
+| ⌘K       | Insert link   |
+| ⌘E       | Inline code   |
 
 - [x] Open the app
 - [ ] Write something worth keeping
@@ -129,7 +207,8 @@ print(greet("writer"))
 PREVIEW_CSS = r"""
 body {
   margin: 0;
-  font-family: "Ubuntu", "Cantarell", "Inter", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+               "Helvetica Neue", Arial, sans-serif;
   font-size: 16px;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
@@ -207,7 +286,7 @@ blockquote {
 }
 blockquote > :last-child { margin-bottom: 0; }
 code {
-  font-family: "Ubuntu Mono", "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-family: "SF Mono", Menlo, Monaco, "Courier New", monospace;
   font-size: 0.875em;
   background: var(--inline-bg);
   padding: 0.18em 0.38em;
@@ -241,7 +320,7 @@ tr:nth-child(2n) td { background: var(--stripe); }
 img { max-width: 100%; height: auto; border-radius: 7px; }
 hr { height: 1px; border: 0; background: var(--border); margin: 2em 0; }
 kbd {
-  font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+  font-family: "SF Mono", Menlo, Monaco, monospace;
   font-size: 0.8em;
   padding: 0.12em 0.45em;
   border: 1px solid var(--border);
@@ -278,15 +357,61 @@ function setScrollRatio(ratio) {
 }
 """
 
+APP_CSS = r"""
+QToolBar {
+  background: palette(window);
+  border: none;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.18);
+  spacing: 1px;
+  padding: 3px 8px;
+}
+#tabStrip {
+  background: palette(window);
+  border-bottom: 1px solid rgba(127, 127, 127, 0.18);
+}
+QTabBar::tab { min-width: 104px; }
+QToolButton#newTab {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+QToolButton#newTab:hover {
+  background: rgba(127, 127, 127, 0.16);
+  border-radius: 5px;
+}
+QSplitter::handle {
+  background: transparent;
+  border-left: 1px solid rgba(127, 127, 127, 0.24);
+}
+QSplitter::handle:hover { background: rgba(127, 127, 127, 0.10); }
+QStatusBar {
+  border-top: 1px solid rgba(127, 127, 127, 0.18);
+  background: palette(window);
+}
+QStatusBar QLabel {
+  color: palette(mid);
+  font-size: 11px;
+  padding: 0 2px;
+}
+QScrollArea#grammarScroll { border: none; background: palette(window); }
+QWidget#grammarContent { background: palette(window); }
+QFrame#issueCard {
+  border: 1px solid rgba(127, 127, 127, 0.28);
+  border-radius: 10px;
+  background: palette(alternate-base);
+}
+QLabel#grammarCount { font-size: 15px; }
+QLabel#grammarDetail { color: palette(mid); }
+QLabel#grammarContext { color: palette(mid); }
+"""
+
 # ---------------------------------------------------------------- markdown ---
 
 _md = MarkdownIt(
     "commonmark",
     {"html": False, "linkify": True, "typographer": True, "breaks": False},
 )
-_md.enable(
-    ["table", "strikethrough", "linkify", "replacements", "smartquotes"]
-)
+_md.enable(["table", "strikethrough", "linkify", "replacements", "smartquotes"])
 
 _TASK_RE = re.compile(r"<li>\s*\[([ xX])\](?:\s+|(?=</li>))")
 
@@ -352,225 +477,6 @@ def build_export_html(title, text):
     )
 
 
-# ------------------------------------------------------------------- gtk -----
-
-APP_CSS = b"""
-window { background: @theme_bg_color; }
-
-.tabstrip {
-  background-image: linear-gradient(
-    to bottom,
-    alpha(@theme_fg_color, 0.045),
-    alpha(@theme_fg_color, 0.0)
-  );
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.09);
-}
-.tabbar { padding: 0; }
-.tabbar .tab {
-  min-height: 28px;
-  margin: 3px 1px;
-  padding: 0 1px;
-  border-radius: 9px;
-  border: 1px solid transparent;
-  background: transparent;
-  transition: background 130ms ease, border-color 130ms ease;
-}
-.tabbar .tab:hover {
-  background: alpha(@theme_fg_color, 0.07);
-}
-.tabbar .tab.active {
-  background: alpha(@theme_selected_bg_color, 0.16);
-  border-color: alpha(@theme_selected_bg_color, 0.32);
-}
-.tabbar .tab-title {
-  padding: 3px 6px 3px 10px;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  border-radius: 8px 0 0 8px;
-}
-.tabbar .tab-title label {
-  font-size: 12px;
-  color: alpha(@theme_fg_color, 0.65);
-  transition: color 130ms ease;
-}
-.tabbar .tab:hover .tab-title label {
-  color: alpha(@theme_fg_color, 0.88);
-}
-.tabbar .tab.active .tab-title label {
-  color: @theme_selected_bg_color;
-  font-weight: 600;
-}
-.tabbar .tab-close {
-  min-width: 18px;
-  min-height: 18px;
-  padding: 0;
-  margin: 5px 5px 5px 0;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  border-radius: 999px;
-  opacity: 0.45;
-  transition: background 130ms ease, opacity 130ms ease;
-}
-.tabbar .tab:hover .tab-close,
-.tabbar .tab.active .tab-close {
-  opacity: 0.8;
-}
-.tabbar .tab-close:hover {
-  background: alpha(@theme_fg_color, 0.13);
-  opacity: 1;
-}
-button.new-tab {
-  min-width: 26px;
-  min-height: 26px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-  color: alpha(@theme_fg_color, 0.62);
-  transition: background 130ms ease, color 130ms ease;
-}
-button.new-tab:hover {
-  background: alpha(@theme_fg_color, 0.09);
-  color: @theme_fg_color;
-}
-button.new-tab:active {
-  background: alpha(@theme_selected_bg_color, 0.18);
-  color: @theme_selected_bg_color;
-}
-
-.grammar-list {
-  background: @theme_base_color;
-  border-radius: 10px;
-}
-.grammar-list row {
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.07);
-  padding: 0;
-}
-.grammar-list row:last-child { border-bottom: none; }
-.grammar-row { background: transparent; }
-.grammar-context { color: alpha(@theme_fg_color, 0.68); }
-.grammar-count { font-size: 14px; }
-.grammar-scroll { border-radius: 10px; }
-
-.formatbar {
-  background-image: linear-gradient(
-    to bottom,
-    alpha(@theme_fg_color, 0.018),
-    alpha(@theme_fg_color, 0.0)
-  );
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.09);
-  padding: 3px 4px;
-}
-.formatbar flowboxchild { padding: 0; }
-.formatbar .toolbar-scroll,
-.formatbar .toolbar-scroll viewport {
-  background: transparent;
-}
-.formatbar scrollbar {
-  background: transparent;
-}
-.formatbar scrollbar slider {
-  min-height: 4px;
-  min-width: 28px;
-  border-radius: 2px;
-  background: alpha(@theme_fg_color, 0.16);
-}
-.formatbar .tool-group {
-  background: alpha(@theme_fg_color, 0.035);
-  border: 1px solid alpha(@theme_fg_color, 0.05);
-  border-radius: 9px;
-  padding: 1px 1px;
-}
-button.tool {
-  min-height: 26px;
-  min-width: 24px;
-  padding: 3px 3px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  color: alpha(@theme_fg_color, 0.82);
-  transition: background 120ms ease, color 120ms ease;
-}
-button.tool:hover {
-  background: alpha(@theme_fg_color, 0.10);
-  color: @theme_fg_color;
-}
-button.tool:active, button.tool:checked {
-  background: alpha(@theme_selected_bg_color, 0.18);
-  color: @theme_selected_bg_color;
-}
-button.hlabel {
-  font-weight: 700;
-  font-size: 11px;
-  padding: 4px 7px;
-  letter-spacing: 0.02em;
-}
-button.glyph {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 3px 6px;
-}
-button.glyph.mono {
-  font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: -0.04em;
-}
-.editor-view {
-  font-family: "Ubuntu Mono", "JetBrains Mono", "DejaVu Sans Mono", monospace;
-  font-size: 14px;
-  background: @theme_base_color;
-  color: @theme_fg_color;
-}
-.statusbar {
-  border-top: 1px solid alpha(@theme_fg_color, 0.08);
-  background-image: linear-gradient(
-    to bottom,
-    alpha(@theme_fg_color, 0.0),
-    alpha(@theme_fg_color, 0.025)
-  );
-}
-.statusbar label {
-  font-size: 11px;
-  color: alpha(@theme_fg_color, 0.60);
-}
-paned > separator {
-  min-width: 5px;
-  min-height: 5px;
-  background-image: linear-gradient(
-    to right,
-    alpha(@theme_fg_color, 0.0) 0,
-    alpha(@theme_fg_color, 0.0) 2px,
-    alpha(@theme_fg_color, 0.12) 2px,
-    alpha(@theme_fg_color, 0.12) 3px,
-    alpha(@theme_fg_color, 0.0) 3px
-  );
-}
-paned > separator:hover {
-  background-image: linear-gradient(
-    to right,
-    alpha(@theme_fg_color, 0.0) 0,
-    alpha(@theme_fg_color, 0.0) 1px,
-    alpha(@theme_selected_bg_color, 0.55) 1px,
-    alpha(@theme_selected_bg_color, 0.55) 4px,
-    alpha(@theme_fg_color, 0.0) 4px
-  );
-}
-headerbar { border-bottom: 1px solid alpha(@theme_fg_color, 0.06); }
-headerbar .title-label { font-weight: 700; font-size: 14px; }
-headerbar .subtitle-label { font-size: 10.5px; color: alpha(@theme_fg_color, 0.58); }
-headerbar button {
-  min-height: 28px;
-  min-width: 28px;
-  border-radius: 7px;
-}
-"""
-
-
 def _atomic_write(path, text):
     """Write ``text`` to ``path`` without risking a half-written file.
 
@@ -621,75 +527,134 @@ def _atomic_write(path, text):
         pass
 
 
+def _base_url_for(folder):
+    folder = os.path.abspath(os.path.expanduser(folder or os.path.expanduser("~")))
+    if not folder.endswith(os.sep):
+        folder += os.sep
+    return QUrl.fromLocalFile(folder)
+
+
+def _shortcut_text(widget, shortcuts):
+    if not shortcuts:
+        return ""
+    return shortcuts[0].toString(QKeySequence.SequenceFormat.NativeText)
+
+
 def _dialog_error(parent, message):
-    dialog = Gtk.MessageDialog(
-        transient_for=parent,
-        modal=True,
-        message_type=Gtk.MessageType.ERROR,
-        buttons=Gtk.ButtonsType.CLOSE,
-        text="Something went wrong",
-    )
-    dialog.format_secondary_text(message)
-    dialog.run()
-    dialog.destroy()
+    QMessageBox.critical(parent, "Something went wrong", message)
 
 
 def _dialog_info(parent, message, title="Markdown Studio"):
-    dialog = Gtk.MessageDialog(
-        transient_for=parent,
-        modal=True,
-        message_type=Gtk.MessageType.INFO,
-        buttons=Gtk.ButtonsType.CLOSE,
-        text=title,
-    )
-    dialog.format_secondary_text(message)
-    dialog.run()
-    dialog.destroy()
+    QMessageBox.information(parent, title, message)
 
 
 def _dialog_replace(parent, path):
     """Ask before a Save/Export overwrites a path we appended an extension to."""
-    dialog = Gtk.MessageDialog(
-        transient_for=parent,
-        modal=True,
-        message_type=Gtk.MessageType.QUESTION,
-        buttons=Gtk.ButtonsType.NONE,
-        text="Replace existing file?",
-    )
-    dialog.format_secondary_text(
-        "“%s” already exists. Do you want to replace it?"
-        % os.path.basename(path)
-    )
-    dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-    replace = dialog.add_button("Replace", Gtk.ResponseType.YES)
-    replace.get_style_context().add_class("destructive-action")
-    dialog.set_default_response(Gtk.ResponseType.CANCEL)
-    response = dialog.run()
-    dialog.destroy()
-    return response == Gtk.ResponseType.YES
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Replace existing file?")
+    box.setText("“%s” already exists." % os.path.basename(path))
+    box.setInformativeText("Do you want to replace it?")
+    box.setStandardButtons(QMessageBox.StandardButton.Cancel)
+    replace = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+    box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+    box.exec()
+    return box.clickedButton() is replace
+
+
+def _set_widget_font(widget, point_size=None, bold=False, italic=False, mono=False):
+    if widget is None:
+        return
+    font = widget.font()
+    if mono:
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        if not font.family():
+            font = QFont("Menlo")
+        if point_size:
+            font.setPointSize(point_size)
+    elif point_size:
+        font.setPointSize(point_size)
+    if bold:
+        font.setBold(True)
+    if italic:
+        font.setItalic(True)
+    widget.setFont(font)
+
+
+class LeftAlignedTabStyle(QProxyStyle):
+    """Keep native macOS tab painting, but start tabs at the leading edge."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.StyleHint.SH_TabBar_Alignment:
+            return int(Qt.AlignmentFlag.AlignLeft.value)
+        return super().styleHint(hint, option, widget, returnData)
+
+
+class GrammarCard(QFrame):
+    """A rounded issue card that follows the current light/dark palette."""
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        background = self.palette().color(QPalette.ColorRole.AlternateBase)
+        border = self.palette().color(QPalette.ColorRole.Mid)
+        border.setAlpha(90)
+        painter.setBrush(background)
+        painter.setPen(QPen(border, 1))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 10, 10)
+        painter.end()
+
+
+class MarkdownEditor(QPlainTextEdit):
+    """Plain-text editor that forwards dropped Markdown files to the window."""
+
+    def __init__(self, window):
+        super().__init__()
+        self.window_ref = window
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = self.window_ref.paths_from_mime(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+            self.window_ref.open_paths(paths)
+            return
+        super().dropEvent(event)
 
 
 class Document:
-    """One open file: its buffer, undo history, path and view state."""
+    """One open file: its editor, path, saved text and view state."""
 
-    def __init__(self, text, path=None, label=None, base_dir=None):
-        self.buffer = Gtk.TextBuffer()
-        self.buffer.set_text(text)
-        self.buffer.place_cursor(self.buffer.get_start_iter())
-        self.buffer.set_modified(False)
+    def __init__(self, window, text, path=None, label=None, base_dir=None):
+        self.editor = MarkdownEditor(window)
+        self.editor.setPlainText(text)
+        self.editor.setPlaceholderText("Start writing Markdown…")
+        self.editor.setTabChangesFocus(False)
+        self.editor.setFrameShape(QFrame.Shape.NoFrame)
+        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.editor.setViewportMargins(26, 20, 26, 40)
+        self.editor.document().setModified(False)
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        if not font.family():
+            font = QFont("Menlo")
+        font.setPointSize(13)
+        self.editor.setFont(font)
+        self.editor.setTabStopDistance(
+            self.editor.fontMetrics().horizontalAdvance(" ") * 4
+        )
+
         self.path = path
         self.label = label
         self.saved_text = text
-        self.undo_stack = []
-        self.redo_stack = []
-        self.history_text = text
-        self.history_cursor = 0
-        self.group_start = 0
         self.scroll_ratio = 0.0
+        self.grammar_matches = []
         folder = os.path.dirname(path) if path else (base_dir or os.path.expanduser("~"))
-        self.base_uri = GLib.filename_to_uri(folder, None) + "/"
-        self.tab_widget = None
-        self.tab_label = None
+        self.base_dir = folder
 
     @property
     def display_name(self):
@@ -697,699 +662,687 @@ class Document:
             return os.path.basename(self.path)
         return self.label or "Untitled"
 
+    def is_modified(self):
+        return self.editor.document().isModified()
 
-class MarkdownWindow(Gtk.ApplicationWindow):
-    def __init__(self, application):
-        super().__init__(application=application)
-        self.set_default_size(1400, 880)
-        self.set_size_request(640, 420)
-        self.set_title(APP_NAME)
-        if os.path.exists(ICON_PATH):
-            try:
-                self.set_icon_from_file(ICON_PATH)
-            except GLib.Error:
-                pass
+    def text(self):
+        return self.editor.toPlainText()
+
+
+# --------------------------------------------------------------- qwebengine ---
+
+class PreviewPage(QWebEnginePage):
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self.window_ref = window
+
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if is_main_frame and nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            scheme = url.scheme().lower()
+            if scheme in ("http", "https", "mailto"):
+                QDesktopServices.openUrl(url)
+                return False
+            if scheme == "file":
+                local = url.toLocalFile()
+                if local and os.path.isdir(local):
+                    # An in-page anchor resolves against the base folder.
+                    return True
+                if local and os.path.isfile(local):
+                    if local.lower().endswith(MARKDOWN_EXTENSIONS):
+                        QTimer.singleShot(
+                            0, lambda path=local: self.window_ref.open_paths([path])
+                        )
+                    else:
+                        QDesktopServices.openUrl(url)
+                    return False
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
+class GrammarBridge(QObject):
+    finished = Signal(object, str, str, object, object, object)
+
+
+# ------------------------------------------------------------------ window ---
+
+class MarkdownWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(640, 420)
+        self.resize(1400, 880)
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(ICON_PATH))
+        self.setAcceptDrops(True)
 
         self._loading = False
-        self._last_dir = os.path.expanduser("~")
+        self._switching_document = False
+        self._syncing_tabs = False
         self._preview_ready = False
-        self._preview_timeout = 0
-        self._scroll_timeout = 0
-        self._autosave_timeout = 0
+        self._preview_generation = 0
+        self._shutting_down = False
+        self._last_dir = os.path.expanduser("~")
         self._autosave_enabled = True
+        self._paned_ratio = 0.5
+        self._recent = []
+        self._icon_actions = {}
         self._grammar_checking = False
         self._grammar_dialog = None
-        self._grammar_list = None
-        self._grammar_count = None
-        self._grammar_detail = None
-        self._grammar_fix_button = None
         self._grammar_doc = None
         self._grammar_text = ""
         self._grammar_matches = []
-        self._first_map = True
-        self._applying_history = False
+        self._grammar_list_layout = None
+        self._grammar_count = None
+        self._grammar_detail = None
+        self._grammar_fix_button = None
+
         self.docs = []
         self.doc = None
-        self.buffer = None
-        self._paned_ratio = 0.5
-        self._last_paned_width = 0
-        self._in_paned_resize = False
-        self._switching_document = False
 
-        self.style_manager = Handy.StyleManager.get_default()
-        self._theme_settings = None
-        try:
-            self._theme_settings = Gio.Settings.new("org.gnome.desktop.interface")
-            self._theme_settings.connect(
-                "changed::color-scheme", self._sync_system_theme
-            )
-            self._theme_settings.connect(
-                "changed::gtk-theme", self._sync_system_theme
-            )
-        except GLib.Error:
-            self._theme_settings = None
-        self._sync_system_theme()
-        self.style_manager.connect("notify::dark", self._on_theme_changed)
+        self._settings = QSettings()
+        self._load_preferences()
 
         self._build_actions()
-        self._build_header()
-        self._build_tabs()
-        self._build_body()
-        self._build_statusbar()
         self._build_menu()
+        self._build_toolbar()
+        self._build_central_widget()
+        self._build_statusbar()
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        root.pack_start(self.tab_strip, False, False, 0)
-        root.pack_start(self.formatbar, False, False, 0)
-        root.pack_start(self.paned, True, True, 0)
-        root.pack_start(self.statusbar, False, False, 0)
-        self.add(root)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(140)
+        self._preview_timer.timeout.connect(self._push_content)
 
-        self.connect("map-event", self._on_first_map)
-        self.connect("delete-event", self._on_delete_event)
-        self.connect("drag-data-received", self._on_drag_data)
-        self.connect("key-press-event", self._on_key_press)
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setSingleShot(True)
+        self._scroll_timer.setInterval(45)
+        self._scroll_timer.timeout.connect(self._flush_scroll)
 
-        self.drag_dest_set(
-            Gtk.DestDefaults.ALL,
-            [Gtk.TargetEntry.new("text/uri-list", 0, 0)],
-            Gdk.DragAction.COPY,
-        )
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1200)
+        self._autosave_timer.timeout.connect(self._flush_autosave)
+
+        self._grammar_bridge = GrammarBridge(self)
+        self._grammar_bridge.finished.connect(self._show_grammar_results)
+
+        self._build_preview()
+        self._restore_window_state()
+        self._sync_theme()
+        self._refresh_recent_menu()
+
+        try:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(
+                self._on_system_theme_changed
+            )
+        except AttributeError:
+            pass
 
         self._new_document(WELCOME, None, label="Welcome")
-        self.show_all()
-        self.textview.grab_focus()
+        self._apply_wrap_to_all()
+        self._set_preview_visible(self._preview_visible, initial=True)
+        self._update_header()
+        QTimer.singleShot(0, self._apply_split_ratio)
 
-    # ------------------------------------------------------------- chrome ---
+    # ---------------------------------------------------------- preferences ---
 
-    def _build_header(self):
-        self.header = Handy.HeaderBar()
-        self.header.set_show_close_button(True)
-        self.header.set_has_subtitle(False)
+    def _load_preferences(self):
+        settings = self._settings
+        value = settings.value("files/lastDir", "")
+        if value and os.path.isdir(str(value)):
+            self._last_dir = str(value)
+        self._autosave_enabled = self._setting_bool("edit/autosave", True)
+        self._wrap_enabled = self._setting_bool("view/wrap", True)
+        self._preview_visible = self._setting_bool("view/preview", True)
+        try:
+            ratio = float(settings.value("preview/ratio", 0.5))
+        except (TypeError, ValueError):
+            ratio = 0.5
+        self._paned_ratio = min(0.9, max(0.1, ratio))
+        recent = settings.value("files/recent", [])
+        if isinstance(recent, str):
+            recent = [recent] if recent else []
+        elif recent is None:
+            recent = []
+        self._recent = [str(path) for path in recent][:10]
 
-        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        title_box.set_valign(Gtk.Align.CENTER)
-        self.title_label = Gtk.Label(label="Untitled")
-        self.title_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.title_label.set_max_width_chars(48)
-        self.title_label.get_style_context().add_class("title-label")
-        self.subtitle_label = Gtk.Label(label="")
-        self.subtitle_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.subtitle_label.set_max_width_chars(64)
-        self.subtitle_label.get_style_context().add_class("subtitle-label")
-        title_box.pack_start(self.title_label, False, False, 0)
-        title_box.pack_start(self.subtitle_label, False, False, 0)
-        self.header.set_custom_title(title_box)
+    def _setting_bool(self, key, default):
+        value = self._settings.value(key, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() not in ("false", "0", "no", "")
 
-        for icon, action, tip in (
-            ("document-new-symbolic", "win.new", "New document (Ctrl+N)"),
-            ("document-open-symbolic", "win.open", "Open… (Ctrl+O)"),
-            ("document-save-symbolic", "win.save", "Save (Ctrl+S)"),
-        ):
-            button = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
-            button.set_relief(Gtk.ReliefStyle.NONE)
-            button.set_tooltip_text(tip)
-            button.set_action_name(action)
-            button.set_focus_on_click(False)
-            self.header.pack_start(button)
+    def _save_preferences(self):
+        settings = self._settings
+        settings.setValue("window/geometry", self.saveGeometry())
+        settings.setValue("window/state", self.saveState())
+        settings.setValue("splitter/state", self.splitter.saveState())
+        settings.setValue("preview/ratio", self._paned_ratio)
+        settings.setValue("view/preview", self._preview_visible)
+        settings.setValue("view/wrap", self._wrap_enabled)
+        settings.setValue("edit/autosave", self._autosave_enabled)
+        settings.setValue("files/lastDir", self._last_dir)
+        settings.setValue("files/recent", self._recent)
+        settings.sync()
 
-        self.header.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        for icon, action, tip in (
-            ("edit-undo-symbolic", "win.undo", "Undo (Ctrl+Z)"),
-            ("edit-redo-symbolic", "win.redo", "Redo (Ctrl+Shift+Z)"),
-        ):
-            button = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
-            button.set_relief(Gtk.ReliefStyle.NONE)
-            button.set_tooltip_text(tip)
-            button.set_action_name(action)
-            button.set_focus_on_click(False)
-            self.header.pack_start(button)
+    def _restore_window_state(self):
+        geometry = self._settings.value("window/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        state = self._settings.value("window/state")
+        if state:
+            self.restoreState(state)
+        splitter_state = self._settings.value("splitter/state")
+        if splitter_state:
+            self.splitter.restoreState(splitter_state)
+            sizes = self.splitter.sizes()
+            total = sum(sizes)
+            if total > 0 and sizes[0] > 0:
+                self._paned_ratio = min(0.9, max(0.1, sizes[0] / total))
 
-        self.menu_button = Gtk.MenuButton()
-        self.menu_button.set_image(
-            Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
-        )
-        self.menu_button.set_relief(Gtk.ReliefStyle.NONE)
-        self.menu_button.set_tooltip_text("Menu")
-        self.menu_button.set_focus_on_click(False)
-        self.header.pack_end(self.menu_button)
-        self.set_titlebar(self.header)
-
-    def _build_tabs(self):
-        self.tabbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        self.tabbar.get_style_context().add_class("tabbar")
-        self.tabbar.set_margin_start(1)
-        self.tabbar.set_margin_end(1)
-        self.tabbar.set_valign(Gtk.Align.CENTER)
-
-        self.tab_scroll = Gtk.ScrolledWindow()
-        self.tab_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        self.tab_scroll.set_overlay_scrolling(True)
-        self.tab_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        self.tab_scroll.set_hexpand(True)
-        self.tab_scroll.set_size_request(-1, 34)
-        self.tab_scroll.add(self.tabbar)
-        self._last_tab_view_width = 0
-        self.tab_scroll.connect(
-            "size-allocate", self._on_tab_view_size_allocate
-        )
-
-        self.new_tab_button = Gtk.Button.new_from_icon_name(
-            "list-add-symbolic", Gtk.IconSize.BUTTON
-        )
-        self.new_tab_button.set_relief(Gtk.ReliefStyle.NONE)
-        self.new_tab_button.set_tooltip_text("New tab (Ctrl+N)")
-        self.new_tab_button.set_action_name("win.new")
-        self.new_tab_button.set_focus_on_click(False)
-        self.new_tab_button.set_valign(Gtk.Align.CENTER)
-        self.new_tab_button.get_style_context().add_class("new-tab")
-
-        self.tab_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.tab_strip.get_style_context().add_class("tabstrip")
-        self.tab_strip.set_margin_start(8)
-        self.tab_strip.set_margin_end(8)
-        self.tab_strip.set_margin_top(6)
-        self.tab_strip.set_margin_bottom(3)
-        self.tab_strip.pack_start(self.tab_scroll, True, True, 0)
-        self.tab_strip.pack_end(self.new_tab_button, False, False, 0)
-
-    def _build_tab(self, doc):
-        tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        tab.get_style_context().add_class("tab")
-
-        label = Gtk.Label(label=doc.display_name)
-        label.set_ellipsize(Pango.EllipsizeMode.END)
-        label.set_max_width_chars(26)
-        label.set_single_line_mode(True)
-        label.set_xalign(0)
-        title = Gtk.Button()
-        title.set_relief(Gtk.ReliefStyle.NONE)
-        title.set_focus_on_click(False)
-        # Keep every tab legible: without a minimum width a crowded tab bar
-        # squeezes each label down to an ellipsis instead of scrolling.
-        title.set_size_request(110, -1)
-        title.get_style_context().add_class("tab-title")
-        title.add(label)
-        title.connect("clicked", lambda *_: self._select_document(doc))
-
-        close = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
-        close.set_relief(Gtk.ReliefStyle.NONE)
-        close.set_focus_on_click(False)
-        close.set_can_focus(False)
-        close.get_style_context().add_class("tab-close")
-        close.set_tooltip_text("Close file (Ctrl+W)")
-        close.connect("clicked", lambda *_: self._close_document(doc))
-
-        tab.pack_start(title, True, True, 0)
-        tab.pack_end(close, False, False, 0)
-        tab.set_tooltip_text(doc.path or "Not saved yet")
-        self.tabbar.pack_start(tab, False, False, 0)
-        doc.tab_widget = tab
-        doc.tab_label = label
-        tab.show_all()
-        return tab
-
-    def _update_tabs(self):
-        for doc in self.docs:
-            if doc.tab_widget is None:
-                continue
-            name = doc.display_name
-            if doc.buffer.get_modified():
-                name = "• " + name
-            doc.tab_label.set_text(name)
-            context = doc.tab_widget.get_style_context()
-            if doc is self.doc:
-                context.add_class("active")
-            else:
-                context.remove_class("active")
-            doc.tab_widget.set_tooltip_text(doc.path or "Not saved yet")
-
-    def _tool_button(self, icon=None, label=None, action=None, tip=None):
-        if icon:
-            button = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
-        else:
-            button = Gtk.Button(label=label)
-            button.get_style_context().add_class("hlabel")
-        button.set_relief(Gtk.ReliefStyle.NONE)
-        button.set_focus_on_click(False)
-        button.set_can_focus(False)
-        button.get_style_context().add_class("tool")
-        if action:
-            button.set_action_name(action)
-        if tip:
-            button.set_tooltip_text(tip)
-        return button
-
-    def _glyph_button(self, text, action=None, tip=None, mono=False):
-        button = Gtk.Button(label=text)
-        button.set_relief(Gtk.ReliefStyle.NONE)
-        button.set_focus_on_click(False)
-        button.set_can_focus(False)
-        context = button.get_style_context()
-        context.add_class("tool")
-        context.add_class("glyph")
-        if mono:
-            context.add_class("mono")
-        if action:
-            button.set_action_name(action)
-        if tip:
-            button.set_tooltip_text(tip)
-        return button
-
-    def _build_body(self):
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        bar.get_style_context().add_class("formatbar")
-
-        tool_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        tool_row.set_valign(Gtk.Align.CENTER)
-        tool_row.set_margin_start(5)
-        tool_row.set_margin_end(5)
-        tool_row.set_margin_top(4)
-        tool_row.set_margin_bottom(4)
-
-        tool_scroll = Gtk.ScrolledWindow()
-        tool_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        tool_scroll.set_overlay_scrolling(True)
-        tool_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        tool_scroll.set_propagate_natural_height(True)
-        tool_scroll.set_hexpand(True)
-        tool_scroll.set_valign(Gtk.Align.CENTER)
-        tool_scroll.get_style_context().add_class("toolbar-scroll")
-        tool_scroll.add(tool_row)
-
-        groups = [
-            [
-                self._tool_button("format-text-bold-symbolic", action="win.bold", tip="Bold (Ctrl+B)"),
-                self._tool_button("format-text-italic-symbolic", action="win.italic", tip="Italic (Ctrl+I)"),
-                self._tool_button(
-                    "format-text-strikethrough-symbolic",
-                    action="win.strike",
-                    tip="Strikethrough (Ctrl+Shift+X)",
-                ),
-                self._glyph_button("</>", action="win.code", tip="Inline code (Ctrl+E)", mono=True),
-            ],
-            [
-                self._tool_button(label="H1", action="win.h1", tip="Heading 1 (Ctrl+1)"),
-                self._tool_button(label="H2", action="win.h2", tip="Heading 2 (Ctrl+2)"),
-                self._tool_button(label="H3", action="win.h3", tip="Heading 3 (Ctrl+3)"),
-            ],
-            [
-                self._tool_button("view-list-symbolic", action="win.ul", tip="Bulleted list (Ctrl+Shift+8)"),
-                self._tool_button("view-list-ordered-symbolic", action="win.ol", tip="Numbered list (Ctrl+Shift+7)"),
-                self._tool_button("checkbox-checked-symbolic", action="win.task", tip="Task list"),
-                self._glyph_button("“", action="win.quote", tip="Block quote (Ctrl+Shift+9)"),
-            ],
-            [
-                self._tool_button("insert-link-symbolic", action="win.link", tip="Link (Ctrl+K)"),
-                self._tool_button("insert-image-symbolic", action="win.image", tip="Image (Ctrl+Shift+I)"),
-            ],
-            [
-                self._tool_button("view-grid-symbolic", action="win.table", tip="Insert table"),
-                self._tool_button("utilities-terminal-symbolic", action="win.codeblock", tip="Code block (Ctrl+Shift+C)"),
-                self._glyph_button("—", action="win.hr", tip="Horizontal rule"),
-            ],
-        ]
-        for group in groups:
-            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
-            box.get_style_context().add_class("tool-group")
-            for button in group:
-                box.pack_start(button, False, False, 0)
-            tool_row.pack_start(box, False, False, 0)
-
-        self.preview_toggle = Gtk.ToggleButton()
-        self.preview_toggle.set_image(
-            Gtk.Image.new_from_icon_name("view-reveal-symbolic", Gtk.IconSize.BUTTON)
-        )
-        self.preview_toggle.set_relief(Gtk.ReliefStyle.NONE)
-        self.preview_toggle.set_active(True)
-        self.preview_toggle.set_tooltip_text("Show / hide preview (Ctrl+Shift+P)")
-        self.preview_toggle.set_focus_on_click(False)
-        self.preview_toggle.set_can_focus(False)
-        self.preview_toggle.set_valign(Gtk.Align.CENTER)
-        self.preview_toggle.set_margin_end(7)
-        self.preview_toggle.get_style_context().add_class("tool")
-        self.preview_toggle.connect("toggled", self._on_preview_button)
-
-        bar.pack_start(tool_scroll, True, True, 0)
-        bar.pack_end(self.preview_toggle, False, False, 0)
-        self.formatbar = bar
-        self.toolbar_scroll = tool_scroll
-        self.toolbar_flow = tool_row
-
-        editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-
-        self.textview = Gtk.TextView()
-        self.textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.textview.set_left_margin(26)
-        self.textview.set_right_margin(26)
-        self.textview.set_top_margin(20)
-        self.textview.set_bottom_margin(40)
-        self.textview.set_pixels_above_lines(1)
-        self.textview.set_pixels_below_lines(1)
-        self.textview.set_accepts_tab(True)
-        self.textview.get_style_context().add_class("editor-view")
-
-        self.editor_scroll = Gtk.ScrolledWindow()
-        self.editor_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        self.editor_scroll.set_overlay_scrolling(True)
-        self.editor_scroll.add(self.textview)
-
-        editor_box.pack_start(self.editor_scroll, True, True, 0)
-        self.editor_box = editor_box
-
-        settings = WebKit2.Settings()
-        settings.set_enable_javascript(True)
-        settings.set_enable_developer_extras(False)
-        settings.set_enable_page_cache(False)
-        settings.set_allow_file_access_from_file_urls(True)
-        settings.set_allow_universal_access_from_file_urls(False)
-
-        self.webview = WebKit2.WebView()
-        self.webview.set_settings(settings)
-        self.webview.connect("load-changed", self._on_preview_load)
-        self.webview.connect("decide-policy", self._on_decide_policy)
-
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.paned.pack1(editor_box, resize=True, shrink=False)
-        self.paned.pack2(self.webview, resize=True, shrink=False)
-        self.paned.set_position(700)
-        self.paned.connect("notify::position", self._on_paned_position_changed)
-        self.connect("size-allocate", self._on_window_size_allocate)
-
-        self.editor_scroll.get_vadjustment().connect("value-changed", self._on_editor_scroll)
-
-    def _build_statusbar(self):
-        self.statusbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.statusbar.get_style_context().add_class("statusbar")
-        self.statusbar.set_margin_start(14)
-        self.statusbar.set_margin_end(14)
-        self.statusbar.set_margin_top(5)
-        self.statusbar.set_margin_bottom(5)
-
-        self.stats_label = Gtk.Label(label="0 words")
-        self.stats_label.set_xalign(0)
-        self.stats_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.stats_label.set_hexpand(True)
-        self.cursor_label = Gtk.Label(label="Ln 1, Col 1")
-        self.encoding_label = Gtk.Label(label="UTF-8")
-        self.state_label = Gtk.Label(label="Not saved")
-
-        self.statusbar.pack_start(self.stats_label, True, True, 0)
-        self.statusbar.pack_end(self.encoding_label, False, False, 0)
-        self.statusbar.pack_end(Gtk.Label(label="·"), False, False, 0)
-        self.statusbar.pack_end(self.cursor_label, False, False, 0)
-        self.statusbar.pack_end(Gtk.Label(label="·"), False, False, 0)
-        self.statusbar.pack_end(self.state_label, False, False, 0)
-
-    def _build_menu(self):
-        menu = Gio.Menu()
-        menu.append("New Tab", "win.new")
-        menu.append("Open…", "win.open")
-        menu.append("Save", "win.save")
-        menu.append("Save As…", "win.save_as")
-        menu.append("Close File", "win.close")
-        menu.append("Export as HTML…", "win.export")
-
-        tools = Gio.Menu()
-        tools.append("Check Spelling & Grammar…", "win.grammar")
-        menu.append_section(None, tools)
-
-        view = Gio.Menu()
-        view.append("Next Tab", "win.next_tab")
-        view.append("Previous Tab", "win.prev_tab")
-        view.append("Toggle Preview", "win.preview")
-        view.append("Word Wrap", "win.wrap")
-        view.append("Auto-save", "win.autosave")
-        view.append("Fullscreen", "win.fullscreen")
-        menu.append_section(None, view)
-
-        help_section = Gio.Menu()
-        help_section.append("Keyboard Shortcuts", "win.shortcuts")
-        help_section.append("About Markdown Studio", "app.about")
-        help_section.append("Quit", "app.quit")
-        menu.append_section(None, help_section)
-
-        self.menu_button.set_menu_model(menu)
-
-    # ------------------------------------------------------------ actions ---
-
-    def _add_action(self, name, callback, state=None):
-        if state is None:
-            action = Gio.SimpleAction.new(name, None)
-            action.connect("activate", callback)
-        else:
-            action = Gio.SimpleAction.new_stateful(
-                name, None, GLib.Variant.new_boolean(state)
-            )
-            action.connect("change-state", callback)
-        self.add_action(action)
-        return action
+    # -------------------------------------------------------------- actions ---
 
     def _build_actions(self):
-        self._add_action("new", self._on_new)
-        self._add_action("open", self._on_open)
-        self._add_action("save", self._on_save)
-        self._add_action("save_as", self._on_save_as)
-        self._add_action("close", self._on_close)
-        self._add_action("next_tab", lambda *a: self._cycle_tab(1))
-        self._add_action("prev_tab", lambda *a: self._cycle_tab(-1))
-        self._add_action("grammar", self._on_check_grammar)
-        self._add_action("export", self._on_export)
-        self._add_action("undo", lambda *a: self._undo())
-        self._add_action("redo", lambda *a: self._redo())
-        self._add_action("bold", lambda *a: self._wrap("**", "**", "bold text"))
-        self._add_action("italic", lambda *a: self._wrap("*", "*", "italic text"))
-        self._add_action("strike", lambda *a: self._wrap("~~", "~~", "struck text"))
-        self._add_action("code", lambda *a: self._wrap("`", "`", "code"))
-        self._add_action("link", lambda *a: self._insert_link())
-        self._add_action("image", lambda *a: self._insert_image())
-        self._add_action("h1", lambda *a: self._heading(1))
-        self._add_action("h2", lambda *a: self._heading(2))
-        self._add_action("h3", lambda *a: self._heading(3))
-        self._add_action("quote", lambda *a: self._toggle_quote())
-        self._add_action("ul", lambda *a: self._toggle_list(ordered=False))
-        self._add_action("ol", lambda *a: self._toggle_list(ordered=True))
-        self._add_action("task", lambda *a: self._toggle_task())
-        self._add_action("table", lambda *a: self._insert_table())
-        self._add_action("codeblock", lambda *a: self._insert_code_block())
-        self._add_action("hr", lambda *a: self._insert_block("\n\n---\n"))
-        self._preview_action = self._add_action(
-            "preview", self._on_preview_toggled, state=True
+        self.act = {}
+
+        def action(key, text, slot, shortcuts=None, checkable=False, checked=False):
+            act = QAction(text, self)
+            if shortcuts:
+                act.setShortcuts([QKeySequence(item) for item in shortcuts])
+            act.setCheckable(checkable)
+            if checkable:
+                act.setChecked(checked)
+            if not checkable:
+                act.triggered.connect(slot)
+            self.act[key] = act
+            return act
+
+        action("new", "New Tab", self._on_new, ["Ctrl+N"])
+        action("open", "Open…", self._on_open, ["Ctrl+O"])
+        action("save", "Save", self._on_save, ["Ctrl+S"])
+        action("save_as", "Save As…", self._on_save_as, ["Ctrl+Shift+S"])
+        action("close", "Close Tab", self._on_close, ["Ctrl+W"])
+        action("export", "Export as HTML…", self._on_export, ["Ctrl+Shift+E"])
+        action("grammar", "Check Spelling & Grammar…", self._on_check_grammar, ["Ctrl+Shift+G"])
+        action("undo", "Undo", lambda: self._editor().undo(), ["Ctrl+Z"])
+        action("redo", "Redo", lambda: self._editor().redo(), ["Ctrl+Shift+Z", "Ctrl+Y"])
+        action("cut", "Cut", lambda: self._editor().cut(), ["Ctrl+X"])
+        action("copy", "Copy", lambda: self._editor().copy(), ["Ctrl+C"])
+        action("paste", "Paste", lambda: self._editor().paste(), ["Ctrl+V"])
+        action("select_all", "Select All", lambda: self._editor().selectAll(), ["Ctrl+A"])
+
+        action("bold", "Bold", lambda: self._wrap("**", "**", "bold text"), ["Ctrl+B"])
+        action("italic", "Italic", lambda: self._wrap("*", "*", "italic text"), ["Ctrl+I"])
+        action("strike", "Strikethrough", lambda: self._wrap("~~", "~~", "struck text"), ["Ctrl+Shift+X"])
+        action("code", "Inline Code", lambda: self._wrap("`", "`", "code"), ["Ctrl+E"])
+        action("link", "Link…", self._insert_link, ["Ctrl+K"])
+        action("image", "Image…", self._insert_image, ["Ctrl+Shift+I"])
+        action("h1", "Heading 1", lambda: self._heading(1), ["Ctrl+1"])
+        action("h2", "Heading 2", lambda: self._heading(2), ["Ctrl+2"])
+        action("h3", "Heading 3", lambda: self._heading(3), ["Ctrl+3"])
+        action("quote", "Block Quote", self._toggle_quote, ["Ctrl+Shift+9"])
+        action("ul", "Bulleted List", lambda: self._toggle_list(False), ["Ctrl+Shift+8"])
+        action("ol", "Numbered List", lambda: self._toggle_list(True), ["Ctrl+Shift+7"])
+        action("task", "Task List", self._toggle_task)
+        action("table", "Insert Table", self._insert_table)
+        action("codeblock", "Code Block", self._insert_code_block, ["Ctrl+Shift+C"])
+        action("hr", "Horizontal Rule", lambda: self._insert_block("\n\n---\n"))
+        action("next_tab", "Next Tab", lambda: self._cycle_tab(1), ["Meta+Tab", "Meta+PageDown"])
+        action("prev_tab", "Previous Tab", lambda: self._cycle_tab(-1), ["Meta+Shift+Tab", "Meta+PageUp"])
+        action("fullscreen", "Enter Full Screen", self._toggle_fullscreen, ["F11", "Ctrl+Meta+F"])
+        action("shortcuts", "Keyboard Shortcuts", self._show_shortcuts)
+        action("minimize", "Minimize", self.showMinimized, ["Ctrl+M"])
+        action("zoom", "Zoom", self._toggle_zoom)
+
+        preview = action("preview", "Show Preview", self._on_preview_action, checkable=True, checked=self._preview_visible)
+        preview.toggled.connect(self._on_preview_toggled)
+
+        wrap = action("wrap", "Word Wrap", self._on_wrap_toggled, checkable=True, checked=self._wrap_enabled)
+        wrap.toggled.connect(self._on_wrap_toggled)
+
+        autosave = action("autosave", "Auto-save", self._on_autosave_toggled, checkable=True, checked=self._autosave_enabled)
+        autosave.toggled.connect(self._on_autosave_toggled)
+
+        quit_action = action("quit", "Quit Markdown Studio", self.close, ["Ctrl+Q"])
+        quit_action.setMenuRole(QAction.MenuRole.QuitRole)
+
+        about_action = action("about", "About Markdown Studio", self._show_about)
+        about_action.setMenuRole(QAction.MenuRole.AboutRole)
+
+        for key, act in self.act.items():
+            if act.shortcuts():
+                hint = _shortcut_text(self, act.shortcuts())
+                base = act.text().replace("&", "").replace("…", "")
+                act.setToolTip("%s (%s)" % (base, hint))
+                act.setStatusTip(act.toolTip())
+            else:
+                act.setToolTip(act.text().replace("&", ""))
+                act.setStatusTip(act.toolTip())
+
+        self.act["wrap"].setToolTip("Wrap long lines")
+        self.act["autosave"].setToolTip("Save named files while you type")
+        self.act["preview"].setToolTip("Show or hide the preview")
+
+    def _build_menu(self):
+        menubar = self.menuBar()
+        if hasattr(menubar, "setNativeMenuBar"):
+            menubar.setNativeMenuBar(True)
+
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction(self.act["new"])
+        file_menu.addAction(self.act["open"])
+        self.recent_menu = file_menu.addMenu("Open Recent")
+        file_menu.addSeparator()
+        file_menu.addAction(self.act["save"])
+        file_menu.addAction(self.act["save_as"])
+        file_menu.addAction(self.act["export"])
+        file_menu.addSeparator()
+        file_menu.addAction(self.act["close"])
+        file_menu.addSeparator()
+        file_menu.addAction(self.act["quit"])
+
+        edit_menu = menubar.addMenu("Edit")
+        edit_menu.addAction(self.act["undo"])
+        edit_menu.addAction(self.act["redo"])
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act["cut"])
+        edit_menu.addAction(self.act["copy"])
+        edit_menu.addAction(self.act["paste"])
+        edit_menu.addAction(self.act["select_all"])
+
+        format_menu = menubar.addMenu("Format")
+        for key in ("bold", "italic", "strike", "code"):
+            format_menu.addAction(self.act[key])
+        format_menu.addSeparator()
+        for key in ("h1", "h2", "h3"):
+            format_menu.addAction(self.act[key])
+        format_menu.addSeparator()
+        for key in ("quote", "ul", "ol", "task"):
+            format_menu.addAction(self.act[key])
+        format_menu.addSeparator()
+        format_menu.addAction(self.act["link"])
+        format_menu.addAction(self.act["image"])
+        format_menu.addSeparator()
+        format_menu.addAction(self.act["table"])
+        format_menu.addAction(self.act["codeblock"])
+        format_menu.addAction(self.act["hr"])
+
+        view_menu = menubar.addMenu("View")
+        view_menu.addAction(self.act["next_tab"])
+        view_menu.addAction(self.act["prev_tab"])
+        view_menu.addSeparator()
+        view_menu.addAction(self.act["preview"])
+        view_menu.addAction(self.act["wrap"])
+        view_menu.addSeparator()
+        view_menu.addAction(self.act["fullscreen"])
+
+        tools_menu = menubar.addMenu("Tools")
+        tools_menu.addAction(self.act["grammar"])
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.act["autosave"])
+
+        window_menu = menubar.addMenu("Window")
+        window_menu.addAction(self.act["minimize"])
+        window_menu.addAction(self.act["zoom"])
+        window_menu.addSeparator()
+        window_menu.addAction(self.act["fullscreen"])
+
+        help_menu = menubar.addMenu("Help")
+        help_menu.addAction(self.act["shortcuts"])
+        help_menu.addAction(self.act["about"])
+
+    def _toolbar_icon(self, key):
+        path = os.path.join(TOOLBAR_ICON_DIR, key + ".png")
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return QIcon()
+        tinted = QPixmap(pixmap.size())
+        tinted.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(tinted)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_SourceIn
         )
-        self._preview_action.connect("notify::state", self._sync_preview_toggle)
-        self._add_action("wrap", self._on_wrap_toggled, state=True)
-        self._add_action("autosave", self._on_autosave_toggled, state=True)
-        self._add_action("fullscreen", self._on_fullscreen)
-        self._add_action("shortcuts", self._on_shortcuts)
+        painter.fillRect(tinted.rect(), self.palette().color(QPalette.ColorRole.ButtonText))
+        painter.end()
+        return QIcon(tinted)
+
+    def _refresh_toolbar_icons(self):
+        for action, key in self._icon_actions.items():
+            action.setIcon(self._toolbar_icon(key))
+        if hasattr(self, "new_tab_button"):
+            self.new_tab_button.setIcon(self._toolbar_icon("plus"))
+            self.new_tab_button.setIconSize(QSize(14, 14))
+
+    def _build_toolbar(self):
+        self.toolbar = QToolBar("Format", self)
+        self.toolbar.setObjectName("FormatToolbar")
+        self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.toolbar.setIconSize(QSize(18, 18))
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+
+        def icon_tool(key, slot, tip):
+            act = QAction(TOOLBAR_LABELS.get(key, key.title()), self)
+            act.setToolTip(tip)
+            act.triggered.connect(slot)
+            self.toolbar.addAction(act)
+            self._icon_actions[act] = key
+            act.setIcon(self._toolbar_icon(key))
+            return act
+
+        def text_tool(label, slot, tip):
+            act = QAction(label, self)
+            act.setToolTip(tip)
+            act.triggered.connect(slot)
+            self.toolbar.addAction(act)
+            button = self.toolbar.widgetForAction(act)
+            if button is not None:
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+                _set_widget_font(button, 10, bold=True)
+            return act
+
+        icon_tool("new", self._on_new, "New tab (%s)" % _shortcut_text(self, self.act["new"].shortcuts()))
+        icon_tool("open", self._on_open, "Open… (%s)" % _shortcut_text(self, self.act["open"].shortcuts()))
+        icon_tool("save", self._on_save, "Save (%s)" % _shortcut_text(self, self.act["save"].shortcuts()))
+        self.toolbar.addSeparator()
+        icon_tool("undo", lambda: self._editor().undo(), "Undo (%s)" % _shortcut_text(self, self.act["undo"].shortcuts()))
+        icon_tool("redo", lambda: self._editor().redo(), "Redo (%s)" % _shortcut_text(self, self.act["redo"].shortcuts()))
+        self.toolbar.addSeparator()
+        icon_tool("bold", lambda: self._wrap("**", "**", "bold text"), "Bold (%s)" % _shortcut_text(self, self.act["bold"].shortcuts()))
+        icon_tool("italic", lambda: self._wrap("*", "*", "italic text"), "Italic (%s)" % _shortcut_text(self, self.act["italic"].shortcuts()))
+        icon_tool("strike", lambda: self._wrap("~~", "~~", "struck text"), "Strikethrough (%s)" % _shortcut_text(self, self.act["strike"].shortcuts()))
+        icon_tool("code", lambda: self._wrap("`", "`", "code"), "Inline code (%s)" % _shortcut_text(self, self.act["code"].shortcuts()))
+        self.toolbar.addSeparator()
+        text_tool("H1", lambda: self._heading(1), "Heading 1 (%s)" % _shortcut_text(self, self.act["h1"].shortcuts()))
+        text_tool("H2", lambda: self._heading(2), "Heading 2 (%s)" % _shortcut_text(self, self.act["h2"].shortcuts()))
+        text_tool("H3", lambda: self._heading(3), "Heading 3 (%s)" % _shortcut_text(self, self.act["h3"].shortcuts()))
+        self.toolbar.addSeparator()
+        icon_tool("ul", lambda: self._toggle_list(False), "Bulleted list (%s)" % _shortcut_text(self, self.act["ul"].shortcuts()))
+        icon_tool("ol", lambda: self._toggle_list(True), "Numbered list (%s)" % _shortcut_text(self, self.act["ol"].shortcuts()))
+        icon_tool("task", self._toggle_task, "Task list")
+        icon_tool("quote", self._toggle_quote, "Block quote (%s)" % _shortcut_text(self, self.act["quote"].shortcuts()))
+        self.toolbar.addSeparator()
+        icon_tool("link", self._insert_link, "Link (%s)" % _shortcut_text(self, self.act["link"].shortcuts()))
+        icon_tool("image", self._insert_image, "Image (%s)" % _shortcut_text(self, self.act["image"].shortcuts()))
+        self.toolbar.addSeparator()
+        icon_tool("table", self._insert_table, "Insert table")
+        icon_tool("codeblock", self._insert_code_block, "Code block (%s)" % _shortcut_text(self, self.act["codeblock"].shortcuts()))
+        icon_tool("hr", lambda: self._insert_block("\n\n---\n"), "Horizontal rule")
+
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        self.preview_button_action = QAction("Preview", self)
+        self.preview_button_action.setCheckable(True)
+        self.preview_button_action.setChecked(self._preview_visible)
+        self.preview_button_action.setToolTip("Show or hide the preview")
+        self.preview_button_action.toggled.connect(self._on_preview_button_toggled)
+        self.toolbar.addAction(self.preview_button_action)
+        self._icon_actions[self.preview_button_action] = "preview"
+        self.preview_button_action.setIcon(self._toolbar_icon("preview"))
+        preview_button = self.toolbar.widgetForAction(self.preview_button_action)
+        if preview_button is not None:
+            preview_button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            )
+            _set_widget_font(preview_button, 11)
+
+    def _build_central_widget(self):
+        central = QWidget(self)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        tab_strip = QFrame(central)
+        tab_strip.setObjectName("tabStrip")
+        tab_strip.setAutoFillBackground(True)
+        tab_strip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        tab_layout = QHBoxLayout(tab_strip)
+        tab_layout.setContentsMargins(8, 0, 8, 0)
+        tab_layout.setSpacing(4)
+
+        self.tabs = QTabBar(tab_strip)
+        self.tabs.setStyle(LeftAlignedTabStyle(QApplication.style()))
+        self.tabs.setDocumentMode(True)
+        self.tabs.setDrawBase(False)
+        self.tabs.setExpanding(False)
+        self.tabs.setMovable(True)
+        self.tabs.setTabsClosable(True)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self.tabs.setMinimumHeight(35)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabCloseRequested.connect(self._on_tab_close_requested)
+        self.tabs.tabMoved.connect(self._on_tab_moved)
+        tab_layout.addWidget(self.tabs, 1)
+
+        self.new_tab_button = QToolButton(tab_strip)
+        self.new_tab_button.setObjectName("newTab")
+        self.new_tab_button.setAutoRaise(True)
+        self.new_tab_button.setToolTip("New tab (%s)" % _shortcut_text(self, self.act["new"].shortcuts()))
+        self.new_tab_button.setFixedSize(28, 26)
+        self.new_tab_button.setIconSize(QSize(14, 14))
+        self.new_tab_button.clicked.connect(self._on_new)
+        tab_layout.addWidget(self.new_tab_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        layout.addWidget(tab_strip, 0)
+
+        self.stack = QStackedWidget(central)
+        self.stack.setMinimumWidth(260)
+
+        self.preview = QWebEngineView(central)
+        self.preview.setMinimumWidth(240)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, central)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(5)
+        self.splitter.addWidget(self.stack)
+        self.splitter.addWidget(self.preview)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([700, 700])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        layout.addWidget(self.splitter, 1)
+        self.setCentralWidget(central)
+
+    def _build_statusbar(self):
+        bar = QStatusBar(self)
+        bar.setSizeGripEnabled(False)
+        self.setStatusBar(bar)
+
+        self.stats_label = QLabel("0 words")
+        self.state_label = QLabel("Not saved")
+        self.cursor_label = QLabel("Ln 1, Col 1")
+        self.encoding_label = QLabel("UTF-8")
+
+        bar.addWidget(self.stats_label, 1)
+        for label in (self.state_label, QLabel("·"), self.cursor_label, QLabel("·"), self.encoding_label):
+            bar.addPermanentWidget(label)
+
+    def _build_preview(self):
+        self.preview_page = PreviewPage(self, self.preview)
+        self.preview.setPage(self.preview_page)
+        settings = self.preview.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
+        self.preview.loadFinished.connect(self._on_preview_load)
+        self._load_preview_shell()
+
+    # --------------------------------------------------------------- theme ---
+
+    def _is_system_dark(self):
+        override = os.environ.get("MARKDOWN_STUDIO_THEME", "").lower()
+        if override in ("dark", "light"):
+            return override == "dark"
+        try:
+            scheme = QGuiApplication.styleHints().colorScheme()
+            if scheme == Qt.ColorScheme.Dark:
+                return True
+            if scheme == Qt.ColorScheme.Light:
+                return False
+        except AttributeError:
+            pass
+        try:
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return "dark" in result.stdout.lower()
+        except Exception:
+            return False
+
+    def _grammar_colors(self):
+        if self._is_system_dark():
+            return QColor("#ff7b72"), QColor(255, 123, 114, 42)
+        return QColor("#d1242f"), QColor(209, 36, 47, 28)
+
+    def _sync_theme(self):
+        dark = self._is_system_dark()
+        self.preview_page.setBackgroundColor(QColor("#0d1117") if dark else QColor("#ffffff"))
+        if self._preview_ready:
+            self._run_js("window.setTheme(%s);" % ("true" if dark else "false"))
+        self._refresh_toolbar_icons()
+        self._reapply_grammar_highlights()
+
+    def _on_system_theme_changed(self, *_args):
+        self._sync_theme()
+
+    def _apply_theme_to_preview(self):
+        self._sync_theme()
 
     # ------------------------------------------------------------- preview ---
 
-    def _init_preview(self):
-        if self.doc is None:
-            return False
-        self.webview.load_html(build_preview_shell(), self.doc.base_uri)
-        return False
+    def _document_base_url(self, doc=None):
+        doc = doc or self.doc
+        folder = doc.base_dir if doc else self._last_dir
+        return _base_url_for(folder)
 
-    def _on_preview_load(self, webview, event):
-        if event == WebKit2.LoadEvent.FINISHED:
-            self._preview_ready = True
-            self._push_content()
-            self._apply_theme_to_preview()
-            ratio = self.doc.scroll_ratio if self.doc else 0.0
-            self._run_js("window.setScrollRatio(%f);" % ratio)
+    def _load_preview_shell(self):
+        if self.doc is not None:
+            folder = self.doc.base_dir
+        else:
+            folder = self._last_dir
+        self._preview_ready = False
+        self._preview_generation += 1
+        self.preview.setHtml(build_preview_shell(), _base_url_for(folder))
 
-    def _push_content(self):
-        if not self._preview_ready or self.buffer is None:
+    def _on_preview_load(self, ok):
+        if not ok:
             return
-        text = self._get_text()
-        js = "window.setTheme(%s);window.setContent(%s);" % (
-            "true" if self.style_manager.get_dark() else "false",
-            json.dumps(render_markdown(text)),
-        )
-        self._run_js(js)
+        self._preview_ready = True
+        self._sync_theme()
+        self._push_content()
+        if self.doc is not None and self._preview_ready:
+            self._run_js("window.setScrollRatio(%f);" % self.doc.scroll_ratio)
 
     def _run_js(self, script):
-        self.webview.evaluate_javascript(
-            script, len(script), None, None, None, None, None
+        if not self._preview_ready:
+            return
+        try:
+            self.preview.page().runJavaScript(script)
+        except RuntimeError:
+            pass
+
+    def _push_content(self):
+        if not self._preview_ready or self.doc is None:
+            return
+        markup = render_markdown(self.doc.text())
+        payload = json.dumps(markup).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        self._run_js(
+            "window.setTheme(%s);window.setContent(%s);"
+            % ("true" if self._is_system_dark() else "false", payload)
         )
 
     def _schedule_preview(self):
-        if self._preview_timeout:
-            GLib.source_remove(self._preview_timeout)
-        self._preview_timeout = GLib.timeout_add(140, self._flush_preview)
+        self._preview_timer.start()
 
-    def _flush_preview(self):
-        self._preview_timeout = 0
-        self._push_content()
-        return False
-
-    def _apply_theme_to_preview(self):
-        dark = self.style_manager.get_dark()
-        self.webview.set_background_color(
-            Gdk.RGBA(0.051, 0.067, 0.090, 1) if dark else Gdk.RGBA(1, 1, 1, 1)
-        )
-        if self._preview_ready:
-            self._run_js("window.setTheme(%s);" % ("true" if dark else "false"))
-
-    def _detect_system_dark(self):
-        env_theme = os.environ.get("GTK_THEME", "").lower()
-        if "dark" in env_theme:
-            return True
-        if "light" in env_theme:
-            return False
-        scheme = ""
-        theme = ""
-        if self._theme_settings is not None:
-            try:
-                scheme = self._theme_settings.get_string("color-scheme").lower()
-                theme = self._theme_settings.get_string("gtk-theme").lower()
-            except (GLib.Error, KeyError):
-                pass
-        if scheme in ("prefer-dark", "dark"):
-            return True
-        if scheme in ("prefer-light", "light"):
-            return False
-        if "dark" in theme:
-            return True
-        if theme:
-            return False
-        return self.style_manager.get_dark()
-
-    def _sync_system_theme(self, *_args):
-        dark = self._detect_system_dark()
-        scheme = (
-            Handy.ColorScheme.FORCE_DARK
-            if dark
-            else Handy.ColorScheme.FORCE_LIGHT
-        )
-        if self.style_manager.get_color_scheme() != scheme:
-            self.style_manager.set_color_scheme(scheme)
-        self._update_grammar_tag_colors()
-        if hasattr(self, "webview"):
-            self._apply_theme_to_preview()
-
-    def _grammar_colors(self):
-        if self.style_manager.get_dark():
-            return "#ff7b72", "rgba(255, 123, 114, 0.16)"
-        return "#d1242f", "rgba(209, 36, 47, 0.09)"
-
-    def _update_grammar_tag_colors(self):
-        underline, background = self._grammar_colors()
-        for doc in self.docs:
-            tag = doc.buffer.get_tag_table().lookup("grammar-error")
-            if tag is None:
-                continue
-            color = Gdk.RGBA()
-            color.parse(underline)
-            tag.set_property("underline-rgba", color)
-            fill = Gdk.RGBA()
-            fill.parse(background)
-            tag.set_property("background-rgba", fill)
-
-    def _on_theme_changed(self, *_args):
-        self._update_grammar_tag_colors()
-        self._apply_theme_to_preview()
-
-    def _on_editor_scroll(self, adjustment):
-        # Ignore adjustment changes caused by swapping buffers or restoring a
-        # remembered scroll position; they are not user scrolling.
-        if self._switching_document:
+    def _on_editor_scroll(self, doc):
+        if self._switching_document or doc is not self.doc:
             return
-        span = adjustment.get_upper() - adjustment.get_page_size()
-        if self.doc is not None:
-            self.doc.scroll_ratio = (
-                adjustment.get_value() / span if span > 0 else 0.0
-            )
-        if not self._preview_ready or self._scroll_timeout:
-            return
-        self._scroll_timeout = GLib.timeout_add(45, self._flush_scroll, adjustment)
-
-    def _flush_scroll(self, adjustment):
-        self._scroll_timeout = 0
+        bar = doc.editor.verticalScrollBar()
+        span = bar.maximum() - bar.minimum()
+        doc.scroll_ratio = (bar.value() - bar.minimum()) / span if span > 0 else 0.0
         if not self._preview_ready:
-            return False
-        span = adjustment.get_upper() - adjustment.get_page_size()
-        ratio = adjustment.get_value() / span if span > 0 else 0.0
-        self._run_js("window.setScrollRatio(%f);" % ratio)
-        return False
-
-    def _on_decide_policy(self, webview, decision, decision_type):
-        if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
-            return False
-        action = decision.get_navigation_action()
-        if action.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED:
-            uri = action.get_request().get_uri() or ""
-            if uri.startswith("file://"):
-                target = uri.split("#", 1)[0].split("?", 1)[0]
-                try:
-                    local = GLib.filename_from_uri(target)[0]
-                except (TypeError, ValueError, GLib.Error):
-                    local = None
-                if local and os.path.isfile(local) and local.lower().endswith(
-                    (".md", ".markdown", ".mdown", ".mkd", ".txt")
-                ):
-                    decision.ignore()
-                    self._open_path(local)
-                    return True
-            if uri.startswith(("http://", "https://", "mailto:")):
-                decision.ignore()
-                Gtk.show_uri_on_window(self, uri, Gtk.get_current_event_time())
-                return True
-        return False
-
-    def _on_preview_toggled(self, action, value):
-        action.set_state(value)
-        self._set_preview_visible(value.get_boolean())
-
-    def _on_preview_button(self, button):
-        active = button.get_active()
-        if self._preview_action.get_state().get_boolean() != active:
-            self._preview_action.set_state(GLib.Variant.new_boolean(active))
-            self._set_preview_visible(active)
-
-    def _sync_preview_toggle(self, action, _pspec=None):
-        if not hasattr(self, "preview_toggle"):
             return
-        active = action.get_state().get_boolean()
-        if self.preview_toggle.get_active() != active:
-            self.preview_toggle.set_active(active)
+        if not self._scroll_timer.isActive():
+            self._scroll_timer.start()
 
-    def _set_preview_visible(self, show):
-        self.webview.set_visible(show)
-        if show:
-            GLib.idle_add(self._apply_paned_ratio_once)
+    def _flush_scroll(self):
+        if not self._preview_ready or self.doc is None:
+            return
+        self._run_js("window.setScrollRatio(%f);" % self.doc.scroll_ratio)
 
-    def _apply_paned_ratio_once(self):
-        width = self.paned.get_allocated_width()
-        if width > 0:
-            self._in_paned_resize = True
-            try:
-                self.paned.set_position(int(width * self._paned_ratio))
-            finally:
-                self._in_paned_resize = False
-        return False
+    def _on_splitter_moved(self, _pos, _index):
+        if self._preview_visible:
+            sizes = self.splitter.sizes()
+            total = sum(sizes)
+            if total > 0:
+                ratio = sizes[0] / total
+                if 0.1 <= ratio <= 0.9:
+                    self._paned_ratio = ratio
 
-    def _on_wrap_toggled(self, action, value):
-        action.set_state(value)
-        wrap = value.get_boolean()
-        self.textview.set_wrap_mode(
-            Gtk.WrapMode.WORD_CHAR if wrap else Gtk.WrapMode.NONE
-        )
+    def _apply_split_ratio(self):
+        if not self._preview_visible:
+            return
+        total = sum(self.splitter.sizes())
+        if total <= 0:
+            total = self.splitter.width()
+        if total > 0:
+            left = int(total * self._paned_ratio)
+            self.splitter.setSizes([left, total - left])
 
-    def _on_fullscreen(self, *_args):
-        window = self.get_window()
-        if window and window.get_state() & Gdk.WindowState.FULLSCREEN:
-            self.unfullscreen()
-        else:
-            self.fullscreen()
+    def _set_preview_visible(self, show, initial=False):
+        self._preview_visible = bool(show)
+        self.preview.setVisible(self._preview_visible)
+        if self.act["preview"].isChecked() != self._preview_visible:
+            self.act["preview"].blockSignals(True)
+            self.act["preview"].setChecked(self._preview_visible)
+            self.act["preview"].blockSignals(False)
+        if self.preview_button_action.isChecked() != self._preview_visible:
+            self.preview_button_action.blockSignals(True)
+            self.preview_button_action.setChecked(self._preview_visible)
+            self.preview_button_action.blockSignals(False)
+        if self._preview_visible:
+            QTimer.singleShot(0, self._apply_split_ratio)
+        elif not initial:
+            self._settings.setValue("preview/ratio", self._paned_ratio)
+
+    def _on_preview_action(self, _checked=False):
+        self._set_preview_visible(self.act["preview"].isChecked())
+
+    def _on_preview_toggled(self, checked):
+        self._set_preview_visible(checked)
+
+    def _on_preview_button_toggled(self, checked):
+        self._set_preview_visible(checked)
 
     # ---------------------------------------------------------- text utils ---
 
+    def _editor(self):
+        return self.doc.editor if self.doc is not None else None
+
     def _get_text(self):
-        if self.buffer is None:
-            return ""
-        start, end = self.buffer.get_bounds()
-        return self.buffer.get_text(start, end, True)
+        return self.doc.text() if self.doc is not None else ""
+
+    def _begin_edit(self):
+        cursor = self._editor().textCursor()
+        cursor.beginEditBlock()
+        return cursor
+
+    def _end_edit(self, cursor):
+        cursor.endEditBlock()
+        self._editor().setTextCursor(cursor)
 
     def _is_wrapped(self, start, end, left, right):
         text = self._get_text()
@@ -1400,111 +1353,129 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
 
     def _wrap(self, left, right, placeholder):
-        buffer = self.buffer
-        buffer.begin_user_action()
-        if buffer.get_has_selection():
-            start, end = buffer.get_selection_bounds()
-            s, e = start.get_offset(), end.get_offset()
-            selected = buffer.get_text(start, end, True)
-            if (
-                len(selected) > len(left) + len(right)
-                and selected.startswith(left)
-                and selected.endswith(right)
-            ):
-                inner = selected[len(left) : len(selected) - len(right)]
-                buffer.delete(start, end)
-                buffer.insert(buffer.get_iter_at_offset(s), inner)
-                buffer.select_range(
-                    buffer.get_iter_at_offset(s),
-                    buffer.get_iter_at_offset(s + len(inner)),
-                )
-            elif self._is_wrapped(s, e, left, right):
-                buffer.delete(
-                    buffer.get_iter_at_offset(e), buffer.get_iter_at_offset(e + len(right))
-                )
-                buffer.delete(
-                    buffer.get_iter_at_offset(s - len(left)),
-                    buffer.get_iter_at_offset(s),
-                )
-                buffer.place_cursor(buffer.get_iter_at_offset(e - len(left) - len(right)))
+        editor = self._editor()
+        if editor is None:
+            return
+        cursor = editor.textCursor()
+        doc = editor.document()
+        text = editor.toPlainText()
+        cursor.beginEditBlock()
+        try:
+            if cursor.hasSelection():
+                s, e = cursor.selectionStart(), cursor.selectionEnd()
+                selected = text[s:e]
+                if (
+                    len(selected) > len(left) + len(right)
+                    and selected.startswith(left)
+                    and selected.endswith(right)
+                ):
+                    inner = selected[len(left) : len(selected) - len(right)]
+                    cursor.setPosition(s)
+                    cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+                    cursor.insertText(inner)
+                    cursor.setPosition(s)
+                    cursor.setPosition(s + len(inner), QTextCursor.MoveMode.KeepAnchor)
+                elif self._is_wrapped(s, e, left, right):
+                    cursor.setPosition(e + len(right))
+                    cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+                    cursor.removeSelectedText()
+                    cursor.setPosition(s)
+                    cursor.setPosition(s - len(left), QTextCursor.MoveMode.KeepAnchor)
+                    cursor.removeSelectedText()
+                    cursor.setPosition(e - len(left) - len(right))
+                else:
+                    cursor.setPosition(e)
+                    cursor.insertText(right)
+                    cursor.setPosition(s)
+                    cursor.insertText(left)
+                    cursor.setPosition(s + len(left))
+                    cursor.setPosition(e + len(left), QTextCursor.MoveMode.KeepAnchor)
             else:
-                buffer.insert(buffer.get_iter_at_offset(e), right)
-                buffer.insert(buffer.get_iter_at_offset(s), left)
-                buffer.select_range(
-                    buffer.get_iter_at_offset(s + len(left)),
-                    buffer.get_iter_at_offset(e + len(left)),
+                position = cursor.position()
+                cursor.insertText(left + placeholder + right)
+                cursor.setPosition(position + len(left))
+                cursor.setPosition(
+                    position + len(left) + len(placeholder),
+                    QTextCursor.MoveMode.KeepAnchor,
                 )
-        else:
-            position = buffer.get_iter_at_mark(buffer.get_insert()).get_offset()
-            buffer.insert(buffer.get_iter_at_offset(position), left + placeholder + right)
-            buffer.select_range(
-                buffer.get_iter_at_offset(position + len(left)),
-                buffer.get_iter_at_offset(position + len(left) + len(placeholder)),
-            )
-        buffer.end_user_action()
-        self.textview.grab_focus()
+        finally:
+            cursor.endEditBlock()
+        editor.setTextCursor(cursor)
+        editor.setFocus()
 
     def _insert_link(self):
-        buffer = self.buffer
-        if buffer.get_has_selection():
-            start, end = buffer.get_selection_bounds()
-            s, e = start.get_offset(), end.get_offset()
-            buffer.begin_user_action()
-            buffer.insert(buffer.get_iter_at_offset(e), "](url)")
-            buffer.insert(buffer.get_iter_at_offset(s), "[")
-            buffer.select_range(
-                buffer.get_iter_at_offset(e + 3), buffer.get_iter_at_offset(e + 6)
-            )
-            buffer.end_user_action()
+        editor = self._editor()
+        if editor is None:
+            return
+        cursor = editor.textCursor()
+        if cursor.hasSelection():
+            s, e = cursor.selectionStart(), cursor.selectionEnd()
+            cursor.beginEditBlock()
+            cursor.setPosition(e)
+            cursor.insertText("](url)")
+            cursor.setPosition(s)
+            cursor.insertText("[")
+            cursor.setPosition(e + 3)
+            cursor.setPosition(e + 6, QTextCursor.MoveMode.KeepAnchor)
+            cursor.endEditBlock()
+            editor.setTextCursor(cursor)
         else:
             self._wrap("[", "](url)", "link text")
-        self.textview.grab_focus()
+        editor.setFocus()
 
     def _insert_image(self):
         self._wrap("![", "](image.png)", "alt text")
-        self.textview.grab_focus()
+        self._editor().setFocus()
 
     def _selected_lines(self):
-        buffer = self.buffer
-        if buffer.get_has_selection():
-            start, end = buffer.get_selection_bounds()
-            first, last = start.get_line(), end.get_line()
-            if end.get_line_offset() == 0 and last > first:
+        editor = self._editor()
+        cursor = editor.textCursor()
+        doc = editor.document()
+        if cursor.hasSelection():
+            first_block = doc.findBlock(cursor.selectionStart())
+            last_block = doc.findBlock(cursor.selectionEnd())
+            first = first_block.blockNumber()
+            last = last_block.blockNumber()
+            if cursor.selectionEnd() == last_block.position() and last > first:
                 last -= 1
         else:
-            first = last = buffer.get_iter_at_mark(buffer.get_insert()).get_line()
+            first = last = cursor.block().blockNumber()
         return first, last
 
     def _transform_lines(self, transform):
-        """Apply transform(list_of_lines) -> new list to the selected lines."""
-        buffer = self.buffer
+        editor = self._editor()
+        if editor is None:
+            return
+        doc = editor.document()
         first, last = self._selected_lines()
-        had_selection = buffer.get_has_selection()
-        buffer.begin_user_action()
+        cursor = editor.textCursor()
+        had_selection = cursor.hasSelection()
         lines = []
-        for line in range(first, last + 1):
-            start = buffer.get_iter_at_line(line)
-            end = start.copy()
-            end.forward_to_line_end()
-            lines.append(buffer.get_text(start, end, True))
+        for number in range(first, last + 1):
+            block = doc.findBlockByNumber(number)
+            lines.append(block.text())
         new_lines = transform(lines)
-        for line in range(last, first - 1, -1):
-            start = buffer.get_iter_at_line(line)
-            end = start.copy()
-            end.forward_to_line_end()
-            buffer.delete(start, end)
-            buffer.insert(buffer.get_iter_at_line(line), new_lines[line - first])
+        new_text = "\n".join(new_lines)
+        start_block = doc.findBlockByNumber(first)
+        end_block = doc.findBlockByNumber(last)
+        start_pos = start_block.position()
+        end_pos = end_block.position() + max(0, end_block.length() - 1)
+
+        cursor.beginEditBlock()
+        try:
+            cursor.setPosition(start_pos)
+            cursor.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(new_text)
+        finally:
+            cursor.endEditBlock()
         if had_selection:
-            end_iter = buffer.get_iter_at_line(last)
-            end_iter.forward_to_line_end()
-            buffer.select_range(buffer.get_iter_at_line(first), end_iter)
+            cursor.setPosition(start_pos)
+            cursor.setPosition(start_pos + len(new_text), QTextCursor.MoveMode.KeepAnchor)
         else:
-            end = buffer.get_iter_at_line(last)
-            end.forward_to_line_end()
-            buffer.place_cursor(end)
-        buffer.end_user_action()
-        self.textview.scroll_to_mark(buffer.get_insert(), 0.1, False, 0, 0)
-        self.textview.grab_focus()
+            cursor.setPosition(start_pos + len(new_text))
+        editor.setTextCursor(cursor)
+        editor.ensureCursorVisible()
+        editor.setFocus()
 
     _PREFIX_RE = re.compile(
         r"^(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)"
@@ -1564,22 +1535,23 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         self._transform_lines(transform)
 
     def _insert_block(self, text, select_text=None):
-        buffer = self.buffer
-        buffer.begin_user_action()
-        insert_at = buffer.get_iter_at_mark(buffer.get_insert())
-        position = insert_at.get_offset()
-        prefix = "\n\n" if insert_at.get_line_offset() > 0 else ""
-        buffer.insert(insert_at, prefix + text)
+        editor = self._editor()
+        if editor is None:
+            return
+        cursor = editor.textCursor()
+        position = cursor.position()
+        prefix = "\n\n" if cursor.positionInBlock() > 0 else ""
+        cursor.beginEditBlock()
+        cursor.insertText(prefix + text)
         if select_text and select_text in text:
             offset = position + len(prefix) + text.index(select_text)
-            buffer.select_range(
-                buffer.get_iter_at_offset(offset),
-                buffer.get_iter_at_offset(offset + len(select_text)),
-            )
+            cursor.setPosition(offset)
+            cursor.setPosition(offset + len(select_text), QTextCursor.MoveMode.KeepAnchor)
         else:
-            buffer.place_cursor(buffer.get_iter_at_offset(position + len(prefix) + len(text)))
-        buffer.end_user_action()
-        self.textview.grab_focus()
+            cursor.setPosition(position + len(prefix) + len(text))
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
+        editor.setFocus()
 
     def _insert_table(self):
         self._insert_block(
@@ -1590,175 +1562,112 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         )
 
     def _insert_code_block(self):
-        buffer = self.buffer
-        if buffer.get_has_selection():
-            start, end = buffer.get_selection_bounds()
-            s, e = start.get_offset(), end.get_offset()
-            selected = buffer.get_text(start, end, True)
-            buffer.begin_user_action()
-            buffer.delete(start, end)
+        editor = self._editor()
+        if editor is None:
+            return
+        cursor = editor.textCursor()
+        cursor.beginEditBlock()
+        if cursor.hasSelection():
+            selected = cursor.selectedText().replace("\u2029", "\n")
+            cursor.removeSelectedText()
             block = "```\n" + selected + "\n```"
-            buffer.insert(buffer.get_iter_at_offset(s), block)
-            buffer.place_cursor(buffer.get_iter_at_offset(s + len(block)))
-            buffer.end_user_action()
-            self.textview.grab_focus()
-            return
-        buffer.begin_user_action()
-        insert_at = buffer.get_iter_at_mark(buffer.get_insert())
-        position = insert_at.get_offset()
-        prefix = "\n\n" if insert_at.get_line_offset() > 0 else ""
-        buffer.insert(insert_at, prefix + "```\n\n```")
-        buffer.place_cursor(buffer.get_iter_at_offset(position + len(prefix) + 4))
-        buffer.end_user_action()
-        self.textview.grab_focus()
-
-    def _undo(self):
-        doc = self.doc
-        if doc is None or not doc.undo_stack:
-            return
-        doc.redo_stack.append((doc.history_text, doc.history_cursor))
-        text, cursor = doc.undo_stack.pop()
-        doc.group_start = 0
-        self._apply_history(text, cursor)
-
-    def _redo(self):
-        doc = self.doc
-        if doc is None or not doc.redo_stack:
-            return
-        doc.undo_stack.append((doc.history_text, doc.history_cursor))
-        text, cursor = doc.redo_stack.pop()
-        doc.group_start = 0
-        self._apply_history(text, cursor)
-
-    def _apply_history(self, text, cursor):
-        doc = self.doc
-        self._applying_history = True
-        doc.buffer.set_text(text)
-        cursor = max(0, min(cursor, doc.buffer.get_char_count()))
-        doc.buffer.place_cursor(doc.buffer.get_iter_at_offset(cursor))
-        self._applying_history = False
-        doc.history_text = text
-        doc.history_cursor = cursor
-        doc.buffer.set_modified(text != doc.saved_text)
-        self._update_stats()
-        self._update_header()
-        self._schedule_preview()
-        self.textview.scroll_to_mark(doc.buffer.get_insert(), 0.15, False, 0, 0)
-        self.textview.grab_focus()
+            cursor.insertText(block)
+            cursor.setPosition(cursor.position())
+        else:
+            position = cursor.position()
+            prefix = "\n\n" if cursor.positionInBlock() > 0 else ""
+            cursor.insertText(prefix + "```\n\n```")
+            cursor.setPosition(position + len(prefix) + 4)
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
+        editor.setFocus()
 
     # --------------------------------------------------------------- files ---
 
-    def _text_of(self, doc):
-        start, end = doc.buffer.get_bounds()
-        return doc.buffer.get_text(start, end, True)
-
     def _make_document(self, text, path=None, label=None):
-        doc = Document(text, path, label, self._last_dir)
-        doc.buffer.connect("changed", lambda buffer: self._on_buffer_changed(buffer))
-        doc.buffer.connect("mark-set", lambda buffer, *a: self._on_mark_set(buffer))
-        doc.buffer.connect("notify::modified", lambda buffer, *a: self._on_modified_changed(buffer))
+        doc = Document(self, text, path, label, self._last_dir)
+        editor = doc.editor
+        editor.textChanged.connect(lambda d=doc: self._on_text_changed(d))
+        editor.cursorPositionChanged.connect(lambda d=doc: self._on_cursor_changed(d))
+        editor.document().modificationChanged.connect(
+            lambda _modified, d=doc: self._on_modification_changed(d)
+        )
+        editor.verticalScrollBar().valueChanged.connect(
+            lambda _value, d=doc: self._on_editor_scroll(d)
+        )
+        self.docs.append(doc)
+        self.stack.addWidget(editor)
+        self._syncing_tabs = True
+        index = self.tabs.addTab(doc.display_name)
+        self.tabs.setTabToolTip(index, doc.path or "Not saved yet")
+        self._syncing_tabs = False
         return doc
 
     def _new_document(self, text="", path=None, label=None):
         doc = self._make_document(text, path, label)
-        self.docs.append(doc)
-        self._build_tab(doc)
         self._select_document(doc)
         return doc
+
+    def _on_tab_changed(self, index):
+        if self._syncing_tabs:
+            return
+        if 0 <= index < len(self.docs):
+            self._select_document(self.docs[index])
+
+    def _on_tab_close_requested(self, index):
+        if 0 <= index < len(self.docs):
+            self._close_document(self.docs[index])
+
+    def _on_tab_moved(self, source, destination):
+        if self._syncing_tabs:
+            return
+        if 0 <= source < len(self.docs) and 0 <= destination < len(self.docs):
+            doc = self.docs.pop(source)
+            self.docs.insert(destination, doc)
+            self._update_tabs()
 
     def _select_document(self, doc):
         if doc not in self.docs:
             return
-        if self.doc is doc:
-            self.textview.grab_focus()
+        if doc is self.doc:
+            doc.editor.setFocus()
             return
         self._flush_pending_autosave()
         self._store_active_view_state()
-        if self._scroll_timeout:
-            GLib.source_remove(self._scroll_timeout)
-            self._scroll_timeout = 0
         target_ratio = doc.scroll_ratio
         self._switching_document = True
         self.doc = doc
-        self.buffer = doc.buffer
-        self.textview.set_buffer(doc.buffer)
         if doc.path:
             self._last_dir = os.path.dirname(doc.path)
-        self._preview_ready = False
-        GLib.idle_add(self._init_preview)
-        GLib.idle_add(self._restore_editor_scroll, doc, target_ratio, 0)
+        self.stack.setCurrentWidget(doc.editor)
+        self._syncing_tabs = True
+        self.tabs.setCurrentIndex(self.docs.index(doc))
+        self._syncing_tabs = False
+        self.tabs.setTabToolTip(self.docs.index(doc), doc.path or "Not saved yet")
         self._update_header()
         self._update_stats()
         self._update_cursor()
-        GLib.idle_add(self._scroll_tab_into_view, doc)
-        self.textview.grab_focus()
-
-    def _on_tab_view_size_allocate(self, _widget, allocation):
-        # Keep the active tab visible when the window becomes narrower.
-        if allocation.width != self._last_tab_view_width:
-            self._last_tab_view_width = allocation.width
-            if self.doc is not None:
-                GLib.idle_add(self._scroll_tab_into_view, self.doc)
-        return False
-
-    def _scroll_tab_into_view(self, doc, attempt=0):
-        if doc is not self.doc or doc.tab_widget is None:
-            return False
-        allocation = doc.tab_widget.get_allocation()
-        adjustment = self.tab_scroll.get_hadjustment()
-        view_width = self.tab_scroll.get_allocated_width()
-        # Newly added tabs have no useful allocation until the next layout
-        # pass, and the adjustment may still describe the old tab strip.
-        # Retry briefly instead of giving up before the tab can be shown.
-        if (
-            view_width <= 1
-            or allocation.width <= 1
-            or allocation.x < 0
-            or allocation.x + allocation.width > adjustment.get_upper()
-        ):
-            if attempt < 60:
-                GLib.timeout_add(
-                    16, self._scroll_tab_into_view, doc, attempt + 1
-                )
-            return False
-        value = adjustment.get_value()
-        if allocation.x < value:
-            adjustment.set_value(allocation.x)
-        elif allocation.x + allocation.width > value + view_width:
-            adjustment.set_value(allocation.x + allocation.width - view_width)
-        return False
+        self._reset_preview()
+        QTimer.singleShot(0, lambda d=doc, r=target_ratio: self._restore_editor_scroll(d, r))
+        doc.editor.setFocus()
 
     def _store_active_view_state(self):
         if self.doc is None:
             return
-        adjustment = self.editor_scroll.get_vadjustment()
-        span = adjustment.get_upper() - adjustment.get_page_size()
-        self.doc.scroll_ratio = adjustment.get_value() / span if span > 0 else 0.0
+        bar = self.doc.editor.verticalScrollBar()
+        span = bar.maximum() - bar.minimum()
+        self.doc.scroll_ratio = (bar.value() - bar.minimum()) / span if span > 0 else 0.0
 
-    def _restore_editor_scroll(self, doc, ratio, attempt=0):
+    def _restore_editor_scroll(self, doc, ratio):
         if doc is not self.doc:
-            return False
-        adjustment = self.editor_scroll.get_vadjustment()
-        span = adjustment.get_upper() - adjustment.get_page_size()
+            return
+        bar = doc.editor.verticalScrollBar()
+        span = bar.maximum() - bar.minimum()
         if span > 0:
-            adjustment.set_value(ratio * span)
+            bar.setValue(int(ratio * span))
         doc.scroll_ratio = ratio
-        # The text view needs a layout pass before the adjustment describes
-        # the new buffer. Settle the position over the next few frames so a
-        # restored tab does not jump back to the top.
-        if attempt < 2:
-            GLib.timeout_add(
-                50 if attempt == 0 else 120,
-                self._restore_editor_scroll,
-                doc,
-                ratio,
-                attempt + 1,
-            )
-            return False
         self._switching_document = False
-        if self._preview_ready:
-            self._run_js("window.setScrollRatio(%f);" % ratio)
-        return False
+        self._flush_scroll()
 
     def _close_document(self, doc):
         if doc not in self.docs:
@@ -1772,17 +1681,16 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             self._close_grammar_dialog(self._grammar_dialog)
         index = self.docs.index(doc)
         self.docs.remove(doc)
-        if doc.tab_widget is not None:
-            self.tabbar.remove(doc.tab_widget)
-            doc.tab_widget.destroy()
-            doc.tab_widget = None
+        self._syncing_tabs = True
+        self.tabs.removeTab(index)
+        self._syncing_tabs = False
+        self.stack.removeWidget(doc.editor)
+        doc.editor.deleteLater()
         if not self.docs:
             self.doc = None
-            self.buffer = None
             self._new_document("", None)
             return
         self.doc = None
-        self.buffer = None
         self._select_document(self.docs[min(index, len(self.docs) - 1)])
 
     def _on_close(self, *_args):
@@ -1795,49 +1703,35 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         index = (self.docs.index(self.doc) + step) % len(self.docs)
         self._select_document(self.docs[index])
 
-    def _load_text(self, text, path):
-        doc = self.doc
-        if doc is None:
-            return
+    def _load_text(self, doc, text, path):
         self._cancel_pending_autosave()
         self._loading = True
-        doc.buffer.set_text(text)
-        doc.buffer.place_cursor(doc.buffer.get_start_iter())
+        doc.editor.setPlainText(text)
+        doc.editor.moveCursor(QTextCursor.MoveOperation.Start)
+        doc.editor.document().setModified(False)
         self._loading = False
         self._clear_grammar_highlights(doc)
         doc.path = path
         doc.label = None
         if path:
             self._last_dir = os.path.dirname(path)
-        doc.base_uri = GLib.filename_to_uri(
-            os.path.dirname(path) if path else self._last_dir, None
-        ) + "/"
+        doc.base_dir = os.path.dirname(path) if path else self._last_dir
         doc.saved_text = text
-        doc.history_text = text
-        doc.history_cursor = 0
-        doc.undo_stack.clear()
-        doc.redo_stack.clear()
-        doc.group_start = 0
         doc.scroll_ratio = 0.0
-        doc.buffer.set_modified(False)
-        self._preview_ready = False
-        GLib.idle_add(self._init_preview)
         self._update_header()
         self._update_stats()
         self._update_cursor()
-        self.textview.scroll_to_iter(doc.buffer.get_start_iter(), 0.0, False, 0, 0)
-        doc.scroll_ratio = 0.0
+        QTimer.singleShot(0, lambda: doc.editor.verticalScrollBar().setValue(0))
+        self._reset_preview()
         self._schedule_preview()
 
     def _open_path(self, path):
-        path = os.path.abspath(os.path.expanduser(path))
+        path = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
         for doc in self.docs:
-            if doc.path and os.path.abspath(doc.path) == path:
+            if doc.path and os.path.realpath(doc.path) == path:
                 self._select_document(doc)
                 return
         try:
-            # utf-8-sig transparently drops a leading BOM so the first
-            # heading is still parsed as Markdown.
             with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
                 text = handle.read()
         except OSError as error:
@@ -1847,19 +1741,46 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if (
             current is not None
             and current.path is None
-            and not current.buffer.get_modified()
+            and not current.is_modified()
         ):
-            self._load_text(text, path)
-            return
-        self._new_document(text, path)
+            self._load_text(current, text, path)
+        else:
+            self._new_document(text, path)
+        self._remember_recent(path)
+
+    def open_paths(self, paths):
+        for path in paths:
+            if path and os.path.isfile(path):
+                self._open_path(path)
+
+    def paths_from_mime(self, mime):
+        paths = []
+        if not mime.hasUrls():
+            return paths
+        for url in mime.urls():
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if path and os.path.isfile(path):
+                paths.append(path)
+        return paths
 
     def _on_open(self, *_args):
-        for path in self._choose_open():
-            self._open_path(path)
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "Open Markdown File",
+            self._last_dir,
+            "Markdown files (*.md *.markdown *.mdown *.mkd *.txt);;All files (*)",
+        )
+        if paths:
+            self._last_dir = os.path.dirname(paths[-1])
+            for path in paths:
+                self._open_path(path)
+        self._editor().setFocus()
 
     def _on_new(self, *_args):
         self._new_document("", None)
-        self.textview.grab_focus()
+        self._editor().setFocus()
 
     def _on_save(self, *_args):
         self._save()
@@ -1882,83 +1803,74 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 if os.path.isfile(candidate) and not _dialog_replace(self, candidate):
                     return False
                 path = candidate
-        text = self._text_of(doc)
+        text = doc.text()
         try:
             _atomic_write(path, text)
         except OSError as error:
             _dialog_error(self, "Could not save %s\n\n%s" % (path, error))
             return False
-        previous_dir = os.path.dirname(doc.path) if doc.path else None
+        previous_dir = doc.base_dir
         doc.path = path
         doc.label = None
-        doc.base_uri = GLib.filename_to_uri(os.path.dirname(path), None) + "/"
+        doc.base_dir = os.path.dirname(path)
         doc.saved_text = text
-        doc.buffer.set_modified(False)
+        doc.editor.document().setModified(False)
         if doc is self.doc:
             self._last_dir = os.path.dirname(path)
-            if previous_dir != self._last_dir:
-                self._preview_ready = False
-                GLib.idle_add(self._init_preview)
+            if previous_dir != doc.base_dir:
+                self._reset_preview()
             self._update_header()
-            self.state_label.set_text("Saved")
+            self.state_label.setText("Saved")
         self._update_tabs()
+        self._remember_recent(path)
         return True
 
     # ------------------------------------------------------------ autosave ---
 
     def _schedule_autosave(self):
-        if not self._autosave_enabled:
-            return
-        if self._autosave_timeout:
-            GLib.source_remove(self._autosave_timeout)
-        self._autosave_timeout = GLib.timeout_add(1200, self._flush_autosave)
+        if self._autosave_enabled:
+            self._autosave_timer.start()
 
     def _cancel_pending_autosave(self):
-        if self._autosave_timeout:
-            GLib.source_remove(self._autosave_timeout)
-            self._autosave_timeout = 0
+        self._autosave_timer.stop()
 
     def _flush_pending_autosave(self):
-        if not self._autosave_timeout:
-            return
-        self._cancel_pending_autosave()
-        if self.doc is not None and self.doc.path:
-            self._autosave_document(self.doc)
+        if self._autosave_timer.isActive():
+            self._cancel_pending_autosave()
+            if self.doc is not None and self.doc.path:
+                self._autosave_document(self.doc)
 
     def _flush_autosave(self):
-        self._autosave_timeout = 0
         if self.doc is None or not self._autosave_enabled:
-            return False
-        if self.doc.path and self.doc.buffer.get_modified():
+            return
+        if self.doc.path and self.doc.is_modified():
             self._autosave_document(self.doc)
-        return False
 
     def _autosave_document(self, doc):
-        if not doc.path or not doc.buffer.get_modified():
+        if not doc.path or not doc.is_modified():
             return True
-        text = self._text_of(doc)
+        text = doc.text()
         try:
             _atomic_write(doc.path, text)
         except OSError:
             if doc is self.doc:
-                self.state_label.set_text("Auto-save failed")
+                self.state_label.setText("Auto-save failed")
             return False
         doc.saved_text = text
-        doc.buffer.set_modified(False)
+        doc.editor.document().setModified(False)
         if doc is self.doc:
             self._update_header()
-            self.state_label.set_text("Auto-saved")
+            self.state_label.setText("Auto-saved")
         self._update_tabs()
         return True
 
     def _autosave_all(self):
         for doc in self.docs:
-            if doc.path and doc.buffer.get_modified():
+            if doc.path and doc.is_modified():
                 self._autosave_document(doc)
 
-    def _on_autosave_toggled(self, action, value):
-        action.set_state(value)
-        self._autosave_enabled = value.get_boolean()
+    def _on_autosave_toggled(self, checked):
+        self._autosave_enabled = bool(checked)
         if self._autosave_enabled:
             self._schedule_autosave()
         else:
@@ -1968,18 +1880,20 @@ class MarkdownWindow(Gtk.ApplicationWindow):
 
     def _on_check_grammar(self, *_args):
         if self._grammar_dialog is not None:
-            self._grammar_dialog.present()
+            self._grammar_dialog.show()
+            self._grammar_dialog.raise_()
+            self._grammar_dialog.activateWindow()
             return
         if self._grammar_checking or self.doc is None:
             return
-        text = self._text_of(self.doc)
+        text = self.doc.text()
         if not text.strip():
             _dialog_info(self, "There is no text to check.", "Nothing to check")
             return
         self._clear_grammar_highlights(self.doc)
         checked = text[:GRAMMAR_MAX_CHARS]
         self._grammar_checking = True
-        self.state_label.set_text("Checking spelling & grammar…")
+        self.state_label.setText("Checking spelling & grammar…")
         worker = threading.Thread(
             target=self._grammar_worker,
             args=(self.doc, text, checked),
@@ -2028,19 +1942,19 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             data = self._post_grammar(payload)
         except Exception as error_object:  # network, TLS, JSON, rate limit…
             error = str(error_object) or error_object.__class__.__name__
-        GLib.idle_add(
-            self._show_grammar_results, doc, text, checked, data, error, dialog
-        )
+        self._grammar_bridge.finished.emit(doc, text, checked, data, error, dialog)
 
     def _show_grammar_results(self, doc, text, checked, data, error, dialog=None):
+        if self._shutting_down:
+            return
         self._grammar_checking = False
         if doc not in self.docs:
             if dialog is not None:
                 self._close_grammar_dialog(dialog)
-            return False
+            return
         if dialog is not None and dialog is not self._grammar_dialog:
-            return False
-        if self._text_of(doc) != text:
+            return
+        if doc.text() != text:
             # The document changed while the request was in flight. Showing
             # the old offsets would highlight the wrong words, so discard the
             # result and re-check an open review.
@@ -2048,7 +1962,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 self._update_header()
             if dialog is not None and dialog is self._grammar_dialog:
                 self._refresh_grammar_dialog(doc, dialog)
-            return False
+            return
         if doc is self.doc:
             self._update_header()
         if dialog is not None:
@@ -2056,20 +1970,20 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 self._set_grammar_status(
                     "Check failed", "Could not reach the grammar service: %s" % error
                 )
-                self._clear_grammar_list()
-                return False
+                self._clear_grammar_rows()
+                return
             matches = data.get("matches", []) if data else []
             matches = [dict(match) for match in matches]
             self._normalise_grammar_offsets(checked, matches)
             self._render_grammar_matches(doc, checked, matches, text)
-            return False
+            return
         if error:
             _dialog_error(
                 self,
                 "Could not reach the spelling and grammar service.\n\n"
                 "Check your internet connection and try again.\n\n%s" % error,
             )
-            return False
+            return
         matches = data.get("matches", []) if data else []
         matches = [dict(match) for match in matches]
         self._normalise_grammar_offsets(checked, matches)
@@ -2079,32 +1993,34 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 "No spelling or grammar issues were found.",
                 "Spelling & Grammar",
             )
-            return False
+            return
         self._build_grammar_dialog(doc, text, checked, matches)
-        return False
 
     def _set_grammar_status(self, count, detail):
         if self._grammar_count is not None:
-            self._grammar_count.set_markup("<b>%s</b>" % GLib.markup_escape_text(count))
+            self._grammar_count.setText("<b>%s</b>" % html.escape(count))
         if self._grammar_detail is not None:
-            self._grammar_detail.set_text(detail)
+            self._grammar_detail.setText(detail)
 
-    def _clear_grammar_list(self):
-        if self._grammar_list is None:
+    def _clear_grammar_rows(self):
+        if self._grammar_list_layout is None:
             return
-        for child in self._grammar_list.get_children():
-            self._grammar_list.remove(child)
-            child.destroy()
+        while self._grammar_list_layout.count():
+            item = self._grammar_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
         if self._grammar_fix_button is not None:
-            self._grammar_fix_button.set_sensitive(False)
+            self._grammar_fix_button.setEnabled(False)
 
     def _render_grammar_matches(self, doc, checked, matches, full_text):
         self._grammar_matches = matches
         self._grammar_text = full_text
         self._grammar_doc = doc
-        if self._grammar_list is None:
+        if self._grammar_list_layout is None:
             return
-        self._clear_grammar_list()
+        self._clear_grammar_rows()
         self._highlight_grammar_issues(doc, matches)
         if matches:
             self._set_grammar_status(
@@ -2117,22 +2033,19 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 "No issues found",
                 self._grammar_detail_text(len(full_text), len(checked)),
             )
-            empty = Gtk.ListBoxRow()
-            label = Gtk.Label(label="No spelling or grammar issues were found.")
-            label.set_margin_top(24)
-            label.set_margin_bottom(24)
-            label.get_style_context().add_class("dim-label")
-            empty.add(label)
-            self._grammar_list.add(empty)
+            label = QLabel("No spelling or grammar issues were found.")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setContentsMargins(20, 30, 20, 30)
+            self._grammar_list_layout.addWidget(label)
         for match in matches:
-            self._grammar_list.add(
+            self._grammar_list_layout.addWidget(
                 self._build_issue_row(doc, checked, full_text, match)
             )
+        self._grammar_list_layout.addStretch(1)
         if self._grammar_fix_button is not None:
-            self._grammar_fix_button.set_sensitive(
+            self._grammar_fix_button.setEnabled(
                 any(match.get("replacements") for match in matches)
             )
-        self._grammar_list.show_all()
 
     def _grammar_detail_text(self, text_length, checked_length):
         host = urllib.parse.urlparse(GRAMMAR_URL).netloc or GRAMMAR_URL
@@ -2144,53 +2057,64 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         return detail
 
     def _build_grammar_dialog(self, doc, text, checked, matches):
-        dialog = Gtk.Dialog(
-            title="Spelling & Grammar",
-            transient_for=self,
-            modal=False,
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Spelling & Grammar")
+        dialog.resize(820, 600)
+        dialog.setModal(False)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 14, 16, 10)
+        layout.setSpacing(10)
+
+        self._grammar_count = QLabel(dialog)
+        self._grammar_count.setObjectName("grammarCount")
+        self._grammar_count.setTextFormat(Qt.TextFormat.RichText)
+        self._grammar_count.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._grammar_detail = QLabel(dialog)
+        self._grammar_detail.setObjectName("grammarDetail")
+        self._grammar_detail.setWordWrap(True)
+        self._grammar_detail.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._grammar_count)
+        layout.addWidget(self._grammar_detail)
+
+        scroller = QScrollArea(dialog)
+        scroller.setObjectName("grammarScroll")
+        scroller.setFrameShape(QFrame.Shape.NoFrame)
+        scroller.setWidgetResizable(True)
+        scroller.viewport().setAutoFillBackground(True)
+        scroller.viewport().setBackgroundRole(QPalette.ColorRole.Window)
+        content = QWidget(scroller)
+        content.setObjectName("grammarContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setAutoFillBackground(True)
+        content.setBackgroundRole(QPalette.ColorRole.Window)
+        self._grammar_list_layout = QVBoxLayout(content)
+        self._grammar_list_layout.setContentsMargins(10, 8, 10, 8)
+        self._grammar_list_layout.setSpacing(8)
+        scroller.setWidget(content)
+        layout.addWidget(scroller, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_button = QPushButton("Close", dialog)
+        close_button.clicked.connect(lambda: self._close_grammar_dialog(dialog))
+        self._grammar_fix_button = QPushButton("Fix All", dialog)
+        self._grammar_fix_button.setDefault(True)
+        self._grammar_fix_button.clicked.connect(
+            lambda: self._apply_all_grammar_fixes(
+                self._grammar_doc, self._grammar_text, list(self._grammar_matches), dialog
+            )
         )
-        dialog.set_default_size(820, 600)
-        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        self._grammar_fix_button = dialog.add_button(
-            "Fix All", Gtk.ResponseType.APPLY
-        )
+        buttons.addWidget(close_button)
+        buttons.addWidget(self._grammar_fix_button)
+        layout.addLayout(buttons)
 
-        content = dialog.get_content_area()
-        content.set_spacing(10)
-        content.set_margin_start(16)
-        content.set_margin_end(16)
-        content.set_margin_top(14)
-        content.set_margin_bottom(10)
-
-        header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self._grammar_count = Gtk.Label()
-        self._grammar_count.set_xalign(0)
-        self._grammar_count.get_style_context().add_class("grammar-count")
-        self._grammar_detail = Gtk.Label()
-        self._grammar_detail.set_xalign(0)
-        self._grammar_detail.set_line_wrap(True)
-        self._grammar_detail.get_style_context().add_class("dim-label")
-        header.pack_start(self._grammar_count, False, False, 0)
-        header.pack_start(self._grammar_detail, False, False, 0)
-        content.pack_start(header, False, False, 0)
-
-        listbox = Gtk.ListBox()
-        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        listbox.get_style_context().add_class("grammar-list")
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_shadow_type(Gtk.ShadowType.NONE)
-        scroller.get_style_context().add_class("grammar-scroll")
-        scroller.add(listbox)
-        content.pack_start(scroller, True, True, 0)
-
-        self._grammar_list = listbox
-        self._grammar_doc = doc
         self._grammar_dialog = dialog
-        dialog.connect("response", self._on_grammar_response)
-        dialog.connect("destroy", self._on_grammar_destroy)
+        self._grammar_doc = doc
+        dialog.finished.connect(lambda _result, d=dialog: self._on_grammar_dialog_finished(d))
         self._render_grammar_matches(doc, checked, matches, text)
-        dialog.show_all()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _refresh_grammar_dialog(self, doc, dialog):
         if dialog is None or dialog is not self._grammar_dialog:
@@ -2199,18 +2123,16 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             self._close_grammar_dialog(dialog)
             return
         self._grammar_doc = doc
-        text = self._text_of(doc)
+        text = doc.text()
         if not text.strip():
             self._render_grammar_matches(doc, "", [], text)
             return
         checked = text[:GRAMMAR_MAX_CHARS]
         self._grammar_checking = True
         if doc is self.doc:
-            self.state_label.set_text("Checking spelling & grammar…")
-        self._set_grammar_status(
-            "Checking…", "Re-checking after applying a fix…"
-        )
-        self._clear_grammar_list()
+            self.state_label.setText("Checking spelling & grammar…")
+        self._set_grammar_status("Checking…", "Re-checking after applying a fix…")
+        self._clear_grammar_rows()
         worker = threading.Thread(
             target=self._grammar_worker,
             args=(doc, text, checked, dialog),
@@ -2219,108 +2141,101 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         worker.start()
 
     def _build_issue_row(self, doc, text, full_text, match):
-        row = Gtk.ListBoxRow()
-        row.get_style_context().add_class("grammar-row")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_margin_start(14)
-        box.set_margin_end(14)
-        box.set_margin_top(10)
-        box.set_margin_bottom(10)
+        card = GrammarCard()
+        card.setObjectName("issueCard")
+        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(4)
 
-        message = Gtk.Label()
-        message.set_markup(
-            "<b>%s</b>" % GLib.markup_escape_text(match.get("message", "Issue"))
-        )
-        message.set_xalign(0)
-        message.set_line_wrap(True)
-        box.pack_start(message, False, False, 0)
+        message = QLabel()
+        message.setTextFormat(Qt.TextFormat.RichText)
+        message.setText("<b>%s</b>" % html.escape(match.get("message", "Issue")))
+        message.setWordWrap(True)
+        message.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(message)
 
-        context = Gtk.Label()
-        context.set_markup(self._issue_markup(text, match))
-        context.set_xalign(0)
-        context.set_line_wrap(True)
-        context.get_style_context().add_class("grammar-context")
-        box.pack_start(context, False, False, 0)
+        context = QLabel()
+        context.setObjectName("grammarContext")
+        context.setTextFormat(Qt.TextFormat.RichText)
+        context.setText(self._issue_markup(text, match))
+        context.setWordWrap(True)
+        context.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(context)
 
         replacements = [
             item.get("value", "")
             for item in (match.get("replacements") or [])
             if item.get("value")
         ]
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        controls.set_margin_top(4)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 4, 0, 0)
         if replacements:
-            combo = Gtk.ComboBoxText()
+            combo = QComboBox()
             for value in replacements[:10]:
-                combo.append_text(value)
-            combo.set_active(0)
-            combo.set_hexpand(True)
-            apply = Gtk.Button(label="Apply")
-            apply.get_style_context().add_class("suggested-action")
-            apply.connect(
-                "clicked",
-                lambda *_: self._apply_grammar_fix(
-                    doc, full_text, match, combo.get_active_text()
-                ),
+                combo.addItem(value)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            apply = QPushButton("Apply")
+            apply.setDefault(False)
+            apply.clicked.connect(
+                lambda _checked=False, c=combo: self._apply_grammar_fix(
+                    doc, full_text, match, c.currentText()
+                )
             )
-            controls.pack_start(combo, True, True, 0)
-            controls.pack_end(apply, False, False, 0)
+            controls.addWidget(combo, 1)
+            controls.addWidget(apply, 0)
         else:
-            note = Gtk.Label(label="No automatic suggestion")
-            note.set_xalign(0)
-            note.get_style_context().add_class("dim-label")
-            controls.pack_start(note, True, True, 0)
-        box.pack_start(controls, False, False, 0)
-
-        row.add(box)
-        return row
-
-    def _grammar_tag(self, doc):
-        table = doc.buffer.get_tag_table()
-        tag = table.lookup("grammar-error")
-        if tag is None:
-            tag = doc.buffer.create_tag("grammar-error")
-            tag.set_property("underline", Pango.Underline.ERROR)
-            underline, background = self._grammar_colors()
-            color = Gdk.RGBA()
-            color.parse(underline)
-            tag.set_property("underline-rgba", color)
-            fill = Gdk.RGBA()
-            fill.parse(background)
-            tag.set_property("background-rgba", fill)
-        return tag
+            note = QLabel("No automatic suggestion")
+            note.setObjectName("grammarDetail")
+            controls.addWidget(note, 1)
+        layout.addLayout(controls)
+        return card
 
     def _clear_grammar_highlights(self, doc):
         if doc is None:
             return
-        tag = doc.buffer.get_tag_table().lookup("grammar-error")
-        if tag is None:
-            return
-        start, end = doc.buffer.get_bounds()
-        doc.buffer.remove_tag(tag, start, end)
+        doc.grammar_matches = []
+        doc.editor.setExtraSelections([])
 
     def _highlight_grammar_issues(self, doc, matches):
-        self._clear_grammar_highlights(doc)
-        if not matches:
+        doc.grammar_matches = list(matches)
+        self._apply_grammar_highlights(doc)
+
+    def _apply_grammar_highlights(self, doc):
+        selections = []
+        if not doc.grammar_matches:
+            doc.editor.setExtraSelections(selections)
             return
-        tag = self._grammar_tag(doc)
-        length = doc.buffer.get_char_count()
-        for match in matches:
+        underline, background = self._grammar_colors()
+        length = doc.editor.document().characterCount()
+        for match in doc.grammar_matches:
             try:
-                offset = int(match.get("offset", -1))
-                span = int(match.get("length", 0))
+                offset = int(match.get("qt_offset", -1))
+                span = int(match.get("qt_length", 0))
             except (TypeError, ValueError):
                 continue
             if offset < 0 or span <= 0 or offset + span > length:
                 continue
-            doc.buffer.apply_tag(
-                tag,
-                doc.buffer.get_iter_at_offset(offset),
-                doc.buffer.get_iter_at_offset(offset + span),
-            )
+            selection = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(doc.editor.document())
+            cursor.setPosition(offset)
+            cursor.setPosition(offset + span, QTextCursor.MoveMode.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+            fmt.setUnderlineColor(underline)
+            fmt.setBackground(background)
+            selection.format = fmt
+            selection.cursor = cursor
+            selections.append(selection)
+        doc.editor.setExtraSelections(selections)
+
+    def _reapply_grammar_highlights(self):
+        for doc in self.docs:
+            if doc.grammar_matches:
+                self._apply_grammar_highlights(doc)
 
     def _normalise_grammar_offsets(self, text, matches):
-        """LanguageTool counts UTF-16 units; GTK uses Unicode code points."""
+        """LanguageTool counts UTF-16 units. Keep both Qt and Python offsets."""
         for match in matches:
             try:
                 start = int(match.get("offset", 0))
@@ -2329,6 +2244,8 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 continue
             start_index = self._utf16_to_index(text, start)
             end_index = self._utf16_to_index(text, start + length)
+            match["qt_offset"] = max(0, start)
+            match["qt_length"] = max(0, length)
             match["offset"] = start_index
             match["length"] = max(0, end_index - start_index)
 
@@ -2357,9 +2274,9 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         suffix = text[offset + length : end].replace("\n", " ")
         return "<small>%s%s<b>%s</b>%s%s</small>" % (
             "…" if start > 0 else "",
-            GLib.markup_escape_text(prefix),
-            GLib.markup_escape_text(issue),
-            GLib.markup_escape_text(suffix),
+            html.escape(prefix),
+            html.escape(issue),
+            html.escape(suffix),
             "…" if end < len(text) else "",
         )
 
@@ -2370,26 +2287,26 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if doc not in self.docs:
             self._close_grammar_dialog(dialog)
             return
-        if self._text_of(doc) != expected_text:
+        if doc.text() != expected_text:
             self._refresh_grammar_dialog(doc, dialog)
             return
         try:
-            offset = int(match.get("offset", -1))
-            length = int(match.get("length", 0))
+            qt_offset = int(match.get("qt_offset", -1))
+            qt_length = int(match.get("qt_length", 0))
         except (TypeError, ValueError):
-            offset, length = -1, 0
-        if offset < 0 or offset + length > len(expected_text):
+            qt_offset, qt_length = -1, 0
+        if qt_offset < 0:
             self._refresh_grammar_dialog(doc, dialog)
             return
         self._select_document(doc)
-        buffer = doc.buffer
-        buffer.begin_user_action()
-        buffer.delete(
-            buffer.get_iter_at_offset(offset),
-            buffer.get_iter_at_offset(offset + length),
-        )
-        buffer.insert(buffer.get_iter_at_offset(offset), replacement)
-        buffer.end_user_action()
+        editor = doc.editor
+        cursor = editor.textCursor()
+        cursor.beginEditBlock()
+        cursor.setPosition(qt_offset)
+        cursor.setPosition(qt_offset + qt_length, QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(replacement)
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
         if dialog is not None and dialog is self._grammar_dialog:
             self._refresh_grammar_dialog(doc, dialog)
 
@@ -2399,7 +2316,7 @@ class MarkdownWindow(Gtk.ApplicationWindow):
         if doc not in self.docs:
             self._close_grammar_dialog(dialog)
             return
-        if self._text_of(doc) != expected_text:
+        if doc.text() != expected_text:
             self._refresh_grammar_dialog(doc, dialog)
             return
         fixes = []
@@ -2410,11 +2327,15 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             try:
                 offset = int(match.get("offset", -1))
                 length = int(match.get("length", 0))
+                qt_offset = int(match.get("qt_offset", -1))
+                qt_length = int(match.get("qt_length", 0))
             except (TypeError, ValueError):
                 continue
             if offset < 0 or offset + length > len(expected_text):
                 continue
-            fixes.append((offset, length, replacements[0].get("value", "")))
+            fixes.append(
+                (offset, length, qt_offset, qt_length, replacements[0].get("value", ""))
+            )
         if not fixes:
             return
         fixes.sort(key=lambda item: item[0])
@@ -2424,58 +2345,52 @@ class MarkdownWindow(Gtk.ApplicationWindow):
             if fix[0] >= boundary:
                 filtered.append(fix)
                 boundary = fix[0] + fix[1]
-        fixes = sorted(filtered, key=lambda item: item[0], reverse=True)
+        filtered.sort(key=lambda item: item[2], reverse=True)
         self._select_document(doc)
-        buffer = doc.buffer
-        buffer.begin_user_action()
-        for offset, length, replacement in fixes:
-            buffer.delete(
-                buffer.get_iter_at_offset(offset),
-                buffer.get_iter_at_offset(offset + length),
-            )
-            buffer.insert(buffer.get_iter_at_offset(offset), replacement)
-        buffer.end_user_action()
+        editor = doc.editor
+        cursor = editor.textCursor()
+        cursor.beginEditBlock()
+        for _offset, _length, qt_offset, qt_length, replacement in filtered:
+            cursor.setPosition(qt_offset)
+            cursor.setPosition(qt_offset + qt_length, QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(replacement)
+        cursor.endEditBlock()
+        editor.setTextCursor(cursor)
         self._refresh_grammar_dialog(doc, dialog)
 
-    def _on_grammar_response(self, dialog, response):
-        if dialog is not self._grammar_dialog:
-            dialog.destroy()
-            return
-        if response == Gtk.ResponseType.APPLY:
-            doc = self._grammar_doc
-            if doc is None:
-                return
-            self._apply_all_grammar_fixes(
-                doc, self._grammar_text, list(self._grammar_matches), dialog
-            )
-        else:
-            self._close_grammar_dialog(dialog)
-
     def _close_grammar_dialog(self, dialog):
+        if dialog is None:
+            return
         if self._grammar_dialog is dialog:
             self._grammar_dialog = None
-            self._grammar_list = None
+            self._grammar_list_layout = None
             self._grammar_count = None
             self._grammar_detail = None
             self._grammar_fix_button = None
             self._grammar_doc = None
             self._grammar_text = ""
             self._grammar_matches = []
-        if dialog is not None:
-            dialog.destroy()
+        dialog.close()
+        dialog.deleteLater()
 
-    def _on_grammar_destroy(self, *_args):
-        self._grammar_dialog = None
-        self._grammar_list = None
-        self._grammar_count = None
-        self._grammar_detail = None
-        self._grammar_fix_button = None
-        self._grammar_doc = None
-        self._grammar_text = ""
-        self._grammar_matches = []
+    def _on_grammar_dialog_finished(self, dialog):
+        if self._grammar_dialog is dialog:
+            self._grammar_dialog = None
+            self._grammar_list_layout = None
+            self._grammar_count = None
+            self._grammar_detail = None
+            self._grammar_fix_button = None
+            self._grammar_doc = None
+            self._grammar_text = ""
+            self._grammar_matches = []
+        dialog.deleteLater()
+
+    # ----------------------------------------------------------- export ---
 
     def _on_export(self, *_args):
         doc = self.doc
+        if doc is None:
+            return
         path = self._choose_export(doc)
         if not path:
             return
@@ -2485,40 +2400,21 @@ class MarkdownWindow(Gtk.ApplicationWindow):
                 return
             path = candidate
         name = os.path.basename(doc.path) if doc.path else (doc.label or "Untitled")
-        document = build_export_html(os.path.splitext(name)[0], self._text_of(doc))
+        document = build_export_html(os.path.splitext(name)[0], doc.text())
         try:
             _atomic_write(path, document)
         except OSError as error:
             _dialog_error(self, "Could not export %s\n\n%s" % (path, error))
 
+    # ----------------------------------------------------------- dialogs ---
+
     def _choose_open(self):
-        dialog = Gtk.FileChooserDialog(
-            title="Open Markdown File",
-            transient_for=self,
-            action=Gtk.FileChooserAction.OPEN,
-            use_header_bar=True,
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self,
+            "Open Markdown File",
+            self._last_dir,
+            "Markdown files (*.md *.markdown *.mdown *.mkd *.txt);;All files (*)",
         )
-        dialog.add_buttons(
-            "Cancel", Gtk.ResponseType.CANCEL, "Open", Gtk.ResponseType.ACCEPT
-        )
-        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
-        dialog.set_current_folder(self._last_dir)
-        dialog.set_select_multiple(True)
-
-        markdown_filter = Gtk.FileFilter()
-        markdown_filter.set_name("Markdown files")
-        for pattern in ("*.md", "*.markdown", "*.mdown", "*.mkd", "*.txt"):
-            markdown_filter.add_pattern(pattern)
-        dialog.add_filter(markdown_filter)
-
-        all_filter = Gtk.FileFilter()
-        all_filter.set_name("All files")
-        all_filter.add_pattern("*")
-        dialog.add_filter(all_filter)
-
-        response = dialog.run()
-        paths = dialog.get_filenames() if response == Gtk.ResponseType.ACCEPT else []
-        dialog.destroy()
         if paths:
             self._last_dir = os.path.dirname(paths[-1])
         return paths
@@ -2526,395 +2422,384 @@ class MarkdownWindow(Gtk.ApplicationWindow):
     def _choose_save(self, doc=None):
         doc = doc or self.doc
         path = doc.path if doc is not None else None
-        dialog = Gtk.FileChooserDialog(
-            title="Save Markdown File",
-            transient_for=self,
-            action=Gtk.FileChooserAction.SAVE,
-            use_header_bar=True,
-        )
-        dialog.add_buttons(
-            "Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.ACCEPT
-        )
-        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
-        dialog.set_do_overwrite_confirmation(True)
-        dialog.set_current_folder(self._last_dir)
         if path:
-            dialog.set_filename(path)
-            dialog.set_current_name(os.path.basename(path))
+            start = path
         else:
-            dialog.set_current_name("untitled.md")
-
-        filter_md = Gtk.FileFilter()
-        filter_md.set_name("Markdown files")
-        for pattern in ("*.md", "*.markdown", "*.txt"):
-            filter_md.add_pattern(pattern)
-        dialog.add_filter(filter_md)
-
-        response = dialog.run()
-        chosen = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
-        dialog.destroy()
+            start = os.path.join(self._last_dir, "untitled.md")
+        chosen, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Markdown File",
+            start,
+            "Markdown files (*.md *.markdown *.mdown *.mkd *.txt);;All files (*)",
+        )
         if chosen:
             self._last_dir = os.path.dirname(chosen)
-        return chosen
+        return chosen or None
 
     def _choose_export(self, doc=None):
         doc = doc or self.doc
         path = doc.path if doc is not None else None
-        dialog = Gtk.FileChooserDialog(
-            title="Export as HTML",
-            transient_for=self,
-            action=Gtk.FileChooserAction.SAVE,
-            use_header_bar=True,
-        )
-        dialog.add_buttons(
-            "Cancel", Gtk.ResponseType.CANCEL, "Export", Gtk.ResponseType.ACCEPT
-        )
-        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
-        dialog.set_do_overwrite_confirmation(True)
-        dialog.set_current_folder(self._last_dir)
         base = os.path.splitext(os.path.basename(path))[0] if path else "untitled"
-        dialog.set_current_name(base + ".html")
-
-        filter_html = Gtk.FileFilter()
-        filter_html.set_name("HTML files")
-        filter_html.add_pattern("*.html")
-        dialog.add_filter(filter_html)
-
-        response = dialog.run()
-        chosen = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
-        dialog.destroy()
+        start = os.path.join(self._last_dir, base + ".html")
+        chosen, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export as HTML",
+            start,
+            "HTML files (*.html);;All files (*)",
+        )
         if chosen:
             self._last_dir = os.path.dirname(chosen)
-        return chosen
+        return chosen or None
 
     def _maybe_save(self, doc=None):
         doc = doc or self.doc
-        if doc is None or not doc.buffer.get_modified():
+        if doc is None or not doc.is_modified():
             return True
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE,
-            text="Save changes?",
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Save changes?")
+        box.setText("“%s” has unsaved changes." % doc.display_name)
+        box.setInformativeText(
+            "Your changes will be lost if you don’t save them."
         )
-        dialog.format_secondary_text(
-            "“%s” has unsaved changes. Your changes will be lost if you don't save them."
-            % doc.display_name
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
         )
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Discard", Gtk.ResponseType.NO)
-        dialog.add_button("Save", Gtk.ResponseType.YES)
-        dialog.set_default_response(Gtk.ResponseType.YES)
-        discard = dialog.get_widget_for_response(Gtk.ResponseType.NO)
-        if discard:
-            discard.get_style_context().add_class("destructive-action")
-        response = dialog.run()
-        dialog.destroy()
-        if response == Gtk.ResponseType.YES:
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        response = box.exec()
+        if response == QMessageBox.StandardButton.Save:
             return self._save(doc=doc)
-        return response == Gtk.ResponseType.NO
-
-    def _on_delete_event(self, *_args):
-        self._flush_pending_autosave()
-        self._autosave_all()
-        for doc in list(self.docs):
-            if doc.buffer.get_modified():
-                self._select_document(doc)
-                if not self._maybe_save(doc):
-                    return True
-        return False
+        return response == QMessageBox.StandardButton.Discard
 
     # -------------------------------------------------------------- status ---
 
-    def _on_buffer_changed(self, buffer=None):
-        if self._loading or self.doc is None:
+    def _on_text_changed(self, doc):
+        if self._loading or doc is not self.doc:
             return
-        if buffer is not None and buffer is not self.buffer:
-            return
-        doc = self.doc
-        current = self._text_of(doc)
         self._clear_grammar_highlights(doc)
-        if not self._applying_history and current != doc.history_text:
-            now = GLib.get_monotonic_time()
-            if not doc.undo_stack or now - doc.group_start > 1_200_000:
-                doc.undo_stack.append((doc.history_text, doc.history_cursor))
-                del doc.undo_stack[:-80]
-                while (
-                    sum(len(entry[0]) for entry in doc.undo_stack) > 8_000_000
-                    and len(doc.undo_stack) > 1
-                ):
-                    doc.undo_stack.pop(0)
-                doc.redo_stack.clear()
-            doc.group_start = now
-            doc.history_text = current
-            doc.history_cursor = doc.buffer.get_iter_at_mark(
-                doc.buffer.get_insert()
-            ).get_offset()
-            doc.buffer.set_modified(current != doc.saved_text)
         self._update_stats()
         self._update_header()
         self._schedule_preview()
         self._schedule_autosave()
 
-    def _on_mark_set(self, buffer):
-        if buffer is self.buffer:
+    def _on_cursor_changed(self, doc):
+        if doc is self.doc:
             self._update_cursor()
 
-    def _on_modified_changed(self, buffer):
-        if buffer is self.buffer:
+    def _on_modification_changed(self, doc):
+        if self._loading:
+            return
+        if doc is self.doc:
             self._update_header()
+        else:
+            self._update_tabs()
 
     def _update_header(self):
-        if self.doc is None or self.buffer is None:
+        if self.doc is None:
             return
         doc = self.doc
         name = doc.display_name
-        modified = doc.buffer.get_modified()
-        self.title_label.set_text(name)
-        title = ("• " if modified else "") + name
-        self.set_title("%s — %s" % (title, APP_NAME))
-        if doc.path:
-            location = os.path.dirname(doc.path).replace(os.path.expanduser("~"), "~", 1)
-            subtitle = ("Edited · " if modified else "") + location
-        else:
-            subtitle = "Edited" if modified else "Not saved yet"
-        self.subtitle_label.set_text(subtitle)
+        modified = doc.is_modified()
+        self.setWindowTitle("%s[*] — %s" % (name, APP_NAME))
+        self.setWindowModified(modified)
+        self.setWindowFilePath(doc.path or "")
         if modified:
-            self.state_label.set_text("Edited")
+            self.state_label.setText("Edited")
         elif doc.path:
-            self.state_label.set_text("Saved")
+            self.state_label.setText("Saved")
         else:
-            self.state_label.set_text("Not saved")
+            self.state_label.setText("Not saved")
         self._update_tabs()
+
+    def _update_tabs(self):
+        for index, doc in enumerate(self.docs):
+            if index >= self.tabs.count():
+                break
+            name = doc.display_name
+            if doc.is_modified():
+                name = "• " + name
+            self.tabs.setTabText(index, name)
+            self.tabs.setTabToolTip(index, doc.path or "Not saved yet")
 
     def _update_stats(self):
         if self.doc is None:
             return
-        text = self._text_of(self.doc)
+        text = self.doc.text()
         words = len(text.split())
         characters = len(text)
         lines = text.count("\n") + 1 if text else 1
         word_label = "word" if words == 1 else "words"
         line_label = "line" if lines == 1 else "lines"
-        self.stats_label.set_text(
+        self.stats_label.setText(
             "%s %s · %s characters · %s %s"
-            % (format(words, ","), word_label, format(characters, ","), format(lines, ","), line_label)
+            % (
+                format(words, ","),
+                word_label,
+                format(characters, ","),
+                format(lines, ","),
+                line_label,
+            )
         )
 
     def _update_cursor(self):
-        if self.doc is None or self.buffer is None:
+        if self.doc is None:
             return
-        iterator = self.buffer.get_iter_at_mark(self.buffer.get_insert())
-        self.cursor_label.set_text(
-            "Ln %s, Col %s" % (format(iterator.get_line() + 1, ","), iterator.get_line_offset() + 1)
+        cursor = self.doc.editor.textCursor()
+        self.cursor_label.setText(
+            "Ln %s, Col %s"
+            % (format(cursor.blockNumber() + 1, ","), format(cursor.positionInBlock() + 1, ","))
         )
 
-    # --------------------------------------------------------------- misc ----
+    # --------------------------------------------------------------- misc ---
 
-    def _on_first_map(self, *_args):
-        if not self._first_map:
-            return False
-        self._first_map = False
-        self._apply_paned_ratio_once()
-        return False
+    def _reset_preview(self):
+        self._preview_ready = False
+        self._load_preview_shell()
 
-    def _on_window_size_allocate(self, _widget, _allocation):
-        if self._in_paned_resize:
-            return False
-        width = self.paned.get_allocated_width()
-        if width <= 0:
-            return False
-        self._last_paned_width = width
-        target = int(width * self._paned_ratio)
-        if abs(self.paned.get_position() - target) > 1:
-            self._in_paned_resize = True
-            try:
-                self.paned.set_position(target)
-            finally:
-                self._in_paned_resize = False
-        return False
+    def _apply_wrap_to_all(self):
+        mode = (
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+            if self._wrap_enabled
+            else QPlainTextEdit.LineWrapMode.NoWrap
+        )
+        for doc in self.docs:
+            doc.editor.setLineWrapMode(mode)
 
-    def _on_paned_position_changed(self, *_args):
-        if self._in_paned_resize:
+    def _on_wrap_toggled(self, checked):
+        self._wrap_enabled = bool(checked)
+        self._apply_wrap_to_all()
+        self._settings.setValue("view/wrap", self._wrap_enabled)
+
+    def _toggle_fullscreen(self, *_args):
+        if self.isFullScreen():
+            self.showNormal()
+            self.act["fullscreen"].setText("Enter Full Screen")
+        else:
+            self.showFullScreen()
+            self.act["fullscreen"].setText("Leave Full Screen")
+
+    def _toggle_zoom(self, *_args):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _remember_recent(self, path):
+        path = os.path.realpath(os.path.abspath(path))
+        self._recent = [item for item in self._recent if os.path.realpath(item) != path]
+        self._recent.insert(0, path)
+        self._recent = self._recent[:10]
+        self._refresh_recent_menu()
+        self._settings.setValue("files/recent", self._recent)
+
+    def _refresh_recent_menu(self):
+        if not hasattr(self, "recent_menu"):
             return
-        width = self.paned.get_allocated_width()
-        if width <= 0 or width != self._last_paned_width:
+        self.recent_menu.clear()
+        existing = [path for path in self._recent if os.path.isfile(path)]
+        if not existing:
+            empty = self.recent_menu.addAction("No Recent Files")
+            empty.setEnabled(False)
             return
-        ratio = self.paned.get_position() / width
-        if 0.1 <= ratio <= 0.9:
-            self._paned_ratio = ratio
+        for path in existing:
+            label = os.path.basename(path)
+            action = self.recent_menu.addAction(label)
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, p=path: self._open_path(p)
+            )
+        self.recent_menu.addSeparator()
+        clear = self.recent_menu.addAction("Clear Menu")
+        clear.triggered.connect(self._clear_recent)
 
-    def _on_key_press(self, _widget, event):
-        if event.keyval == Gdk.KEY_Escape and self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
-            self.unfullscreen()
-            return True
-        return False
+    def _clear_recent(self):
+        self._recent = []
+        self._settings.setValue("files/recent", [])
+        self._refresh_recent_menu()
 
-    def _on_drag_data(self, _widget, context, _x, _y, data, _info, _time):
-        paths = []
-        for uri in data.get_uris() or []:
-            try:
-                path = GLib.filename_from_uri(uri)[0]
-            except (TypeError, ValueError, GLib.Error):
-                # Not a usable local file (for example an http:// URI from a
-                # browser drag); ignore it rather than failing the whole drop.
-                continue
-            if path and os.path.isfile(path):
-                paths.append(path)
-        if context is not None:
-            context.finish(bool(paths), False, _time)
-        for path in paths:
-            self._open_path(path)
-
-    def _on_shortcuts(self, *_args):
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.CLOSE,
-            text="Keyboard Shortcuts",
-        )
-        dialog.format_secondary_text(
-            "Editing\n"
-            "  Ctrl+B  Bold          Ctrl+I  Italic\n"
-            "  Ctrl+E  Inline code   Ctrl+K  Link\n"
-            "  Ctrl+Shift+X  Strikethrough  Ctrl+Shift+I  Image\n"
-            "  Ctrl+1/2/3  Headings  Ctrl+Shift+C  Code block\n"
-            "  Ctrl+Shift+8/7  Lists Ctrl+Shift+9  Quote\n"
-            "  Ctrl+Z / Ctrl+Shift+Z  Undo / Redo\n\n"
-            "Files\n"
-            "  Ctrl+N  New tab       Ctrl+O  Open\n"
-            "  Ctrl+S  Save          Ctrl+Shift+S  Save As\n"
-            "  Ctrl+W  Close file    Ctrl+Tab  Next tab\n"
-            "  Ctrl+Shift+Tab  Previous tab\n"
-            "  Ctrl+Shift+E  Export as HTML\n\n"
-            "Tools\n"
-            "  Ctrl+Shift+G  Check spelling & grammar\n\n"
-            "View\n"
-            "  Ctrl+Shift+P  Toggle preview     F11  Fullscreen\n"
-            "  Ctrl+Q  Quit"
-        )
-        dialog.run()
-        dialog.destroy()
-
-
-class MarkdownStudio(Gtk.Application):
-    def __init__(self):
-        super().__init__(
-            application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN
-        )
-        self.window = None
-
-    def do_startup(self):
-        Gtk.Application.do_startup(self)
-        GLib.set_application_name(APP_NAME)
-        GLib.set_prgname("markdown-studio")
-
-        provider = Gtk.CssProvider()
-        provider.load_from_data(APP_CSS)
-        Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(),
-            provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
-
-        quit_action = Gio.SimpleAction.new("quit", None)
-        quit_action.connect("activate", self._on_quit)
-        self.add_action(quit_action)
-
-        about_action = Gio.SimpleAction.new("about", None)
-        about_action.connect("activate", self._on_about)
-        self.add_action(about_action)
-
-        accels = {
-            "win.new": ["<Control>n"],
-            "win.open": ["<Control>o"],
-            "win.save": ["<Control>s"],
-            "win.save_as": ["<Control><Shift>s"],
-            "win.close": ["<Control>w"],
-            "win.next_tab": ["<Control>Tab", "<Control>Page_Down"],
-            "win.prev_tab": ["<Control><Shift>Tab", "<Control>Page_Up"],
-            "win.export": ["<Control><Shift>e"],
-            "win.grammar": ["<Control><Shift>g"],
-            "win.undo": ["<Control>z"],
-            "win.redo": ["<Control><Shift>z", "<Control>y"],
-            "win.bold": ["<Control>b"],
-            "win.italic": ["<Control>i"],
-            "win.strike": ["<Control><Shift>x"],
-            "win.code": ["<Control>e"],
-            "win.link": ["<Control>k"],
-            "win.image": ["<Control><Shift>i"],
-            "win.h1": ["<Control>1"],
-            "win.h2": ["<Control>2"],
-            "win.h3": ["<Control>3"],
-            # Shifted number keys produce a different keyval (for example
-            # Ctrl+Shift+8 arrives as Ctrl+*), so bind the shifted symbol too.
-            "win.quote": ["<Control><Shift>9", "<Control><Shift>parenleft"],
-            "win.ul": ["<Control><Shift>8", "<Control><Shift>asterisk"],
-            "win.ol": ["<Control><Shift>7", "<Control><Shift>ampersand"],
-            "win.table": [],
-            "win.codeblock": ["<Control><Shift>c"],
-            "win.preview": ["<Control><Shift>p"],
-            "win.wrap": [],
-            "win.fullscreen": ["F11"],
-            "win.shortcuts": [],
-            "app.quit": ["<Control>q"],
-            "app.about": [],
-        }
-        for action, shortcuts in accels.items():
-            if shortcuts:
-                self.set_accels_for_action(action, shortcuts)
-
-    def do_activate(self):
-        if self.window is None:
-            self.window = MarkdownWindow(application=self)
-        self.window.present()
-
-    def do_open(self, files, _n_files, _hint):
-        if self.window is None:
-            self.window = MarkdownWindow(application=self)
-        self.window.present()
-        for gfile in files:
-            path = gfile.get_path()
-            if path:
-                self.window._open_path(path)
-
-    def _on_quit(self, *_args):
-        for window in list(self.get_windows()):
-            window.close()
-            if window in self.get_windows():
-                return
-        if not self.get_windows():
-            self.quit()
-
-    def _on_about(self, *_args):
-        window = self.window or self.get_active_window()
-        dialog = Gtk.AboutDialog(transient_for=window, modal=True)
-        dialog.set_program_name(APP_NAME)
-        dialog.set_version(APP_VERSION)
-        dialog.set_comments(
+    def _show_about(self, *_args):
+        _dialog_info(
+            self,
+            "%s %s\n\n"
             "A small, fast Markdown editor with tabs and a live preview.\n"
-            "Write on the left, see the result on the right."
+            "Write on the left, see the result on the right.\n\n"
+            "Built with Python, Qt and Qt WebEngine.\n"
+            "Licensed under the MIT License."
+            % (APP_NAME, APP_VERSION),
+            "About Markdown Studio",
         )
-        dialog.set_license_type(Gtk.License.MIT_X11)
-        if os.path.exists(ICON_PATH):
-            try:
-                dialog.set_logo(
-                    GdkPixbuf.Pixbuf.new_from_file_at_scale(ICON_PATH, 128, 128, True)
-                )
-            except GLib.Error:
-                pass
-        dialog.run()
-        dialog.destroy()
+
+    def _show_shortcuts(self, *_args):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Keyboard Shortcuts")
+        dialog.resize(560, 540)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(
+            """
+            <style>
+              body { font-family: -apple-system, "SF Pro Text", sans-serif; font-size: 13px; }
+              h3 { margin-top: 18px; margin-bottom: 6px; }
+              td { padding: 3px 14px 3px 0; }
+              td.key { font-family: "SF Mono", Menlo, monospace; white-space: nowrap; }
+              td.action { }
+            </style>
+            <h3>Editing</h3>
+            <table>
+              <tr><td class="key">⌘B</td><td class="action">Bold</td></tr>
+              <tr><td class="key">⌘I</td><td class="action">Italic</td></tr>
+              <tr><td class="key">⇧⌘X</td><td class="action">Strikethrough</td></tr>
+              <tr><td class="key">⌘E</td><td class="action">Inline code</td></tr>
+              <tr><td class="key">⌘K</td><td class="action">Link</td></tr>
+              <tr><td class="key">⇧⌘I</td><td class="action">Image</td></tr>
+              <tr><td class="key">⌘1 / ⌘2 / ⌘3</td><td class="action">Heading 1 / 2 / 3</td></tr>
+              <tr><td class="key">⇧⌘8 / ⇧⌘7</td><td class="action">Bulleted / numbered list</td></tr>
+              <tr><td class="key">⇧⌘9</td><td class="action">Block quote</td></tr>
+              <tr><td class="key">⇧⌘C</td><td class="action">Code block</td></tr>
+              <tr><td class="key">⌘Z / ⇧⌘Z</td><td class="action">Undo / redo</td></tr>
+            </table>
+            <h3>Files</h3>
+            <table>
+              <tr><td class="key">⌘N</td><td class="action">New tab</td></tr>
+              <tr><td class="key">⌘O</td><td class="action">Open</td></tr>
+              <tr><td class="key">⌘S</td><td class="action">Save</td></tr>
+              <tr><td class="key">⇧⌘S</td><td class="action">Save As</td></tr>
+              <tr><td class="key">⌘W</td><td class="action">Close tab</td></tr>
+              <tr><td class="key">⌃⇥ / ⌃⇧⇥</td><td class="action">Next / previous tab</td></tr>
+              <tr><td class="key">⇧⌘E</td><td class="action">Export as HTML</td></tr>
+            </table>
+            <h3>Tools</h3>
+            <table>
+              <tr><td class="key">⇧⌘G</td><td class="action">Check spelling &amp; grammar</td></tr>
+            </table>
+            <h3>View</h3>
+            <table>
+              <tr><td class="key">⇧⌘P</td><td class="action">Show / hide preview</td></tr>
+              <tr><td class="key">⌃⌘F</td><td class="action">Enter / leave full screen</td></tr>
+              <tr><td class="key">F11</td><td class="action">Enter / leave full screen</td></tr>
+            </table>
+            """
+        )
+        layout.addWidget(browser)
+        close = QPushButton("Close", dialog)
+        close.clicked.connect(dialog.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        layout.addLayout(row)
+        dialog.exec()
+
+    # ------------------------------------------------------------- events ---
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = self.paths_from_mime(event.mimeData())
+        if paths:
+            event.acceptProposedAction()
+            self.open_paths(paths)
+            return
+        super().dropEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            self.act["fullscreen"].setText("Enter Full Screen")
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        self._flush_pending_autosave()
+        self._autosave_all()
+        for doc in list(self.docs):
+            if doc.is_modified():
+                self._select_document(doc)
+                if not self._maybe_save(doc):
+                    event.ignore()
+                    return
+        if self.doc is not None:
+            self._store_active_view_state()
+        self._save_preferences()
+        self._shutting_down = True
+        event.accept()
 
 
-def main():
-    # Make the X11 WM_CLASS match the desktop entry's StartupWMClass (and the
-    # Wayland app ID), so the window groups with its launcher and icon.
-    Gdk.set_program_class(APP_ID)
-    app = MarkdownStudio()
-    return app.run(sys.argv)
+# -------------------------------------------------------------------- app ---
+
+class MarkdownApplication(QApplication):
+    openFiles = Signal(list)
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.window = None
+        self._pending_paths = []
+
+    def event(self, event):
+        if event.type() == QEvent.Type.FileOpen:
+            path = event.file()
+            if path:
+                if self.window is not None:
+                    self.window.open_paths([path])
+                else:
+                    self._pending_paths.append(path)
+            return True
+        return super().event(event)
+
+    def attach_window(self, window):
+        self.window = window
+        pending, self._pending_paths = self._pending_paths, []
+        if pending:
+            window.open_paths(pending)
+
+
+def main(argv=None):
+    argv = list(sys.argv if argv is None else argv)
+    QCoreApplication.setAttribute(
+        Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True
+    )
+    app = MarkdownApplication(argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName("Markdown Studio")
+    app.setOrganizationDomain("github.com/markdownstudio")
+    app.setDesktopFileName(APP_ID)
+    app.setWindowIcon(QIcon(ICON_PATH))
+    app.setStyleSheet(APP_CSS)
+    app.setQuitOnLastWindowClosed(True)
+
+    window = MarkdownWindow()
+    app.attach_window(window)
+    window.show()
+
+    paths = [
+        arg
+        for arg in argv[1:]
+        if not arg.startswith("-") and os.path.isfile(os.path.expanduser(arg))
+    ]
+    if paths:
+        window.open_paths(paths)
+    window.raise_()
+    window.activateWindow()
+    if window.doc is not None:
+        window.doc.editor.setFocus()
+    code = app.exec()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # Qt WebEngine and PySide can crash while destroying widgets during
+    # Python finalization after the event loop has already finished.  All
+    # settings and files have been saved by closeEvent, so exit directly.
+    os._exit(code)
 
 
 if __name__ == "__main__":

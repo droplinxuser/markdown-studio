@@ -1,4 +1,11 @@
 __pycache__/
 *.py[cod]
+.DS_Store
+
+# Local build/runtime output
+.build/
+dist/
+
+# Virtualenvs used by other workflows
 .venv/
 venv/

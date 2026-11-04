@@ -1,15 +1,16 @@
 # Markdown Studio
 
-![Markdown Studio](docs/screenshot.png)
+A small, fast Markdown editor for macOS. The window is split in half: a
+toolbar-driven editor on the left and a live preview on the right.
 
-A small, fast Markdown editor for the Ubuntu desktop. The window is split in
-half: a toolbar-driven editor on the left and a live preview on the right.
+![Markdown Studio](docs/screenshot.png)
 
 ## Features
 
 - Split view: Markdown editor with a formatting toolbar, live preview beside it.
 - Tabs for multiple open files, with a close button on every tab. Open several
-  files at once from the file chooser, the command line, or by dragging them in.
+  files at once from the file chooser, the command line, Finder, or by dragging
+  them onto the window.
 - Automatic saving of named files while you type, plus a save-on-close pass so
   an accidental close does not lose changes.
 - Spelling and grammar review through LanguageTool (online; optional and only
@@ -19,34 +20,28 @@ half: a toolbar-driven editor on the left and a live preview on the right.
 - Live preview with GitHub-style typography, tables, task lists, syntax
   highlighting (Pygments) and local/remote images.
 - Toolbar for bold, italic, strikethrough, inline code, headings, quotes, lists,
-  task lists, links, images, tables, code blocks and horizontal rules.
-- Keyboard shortcuts for everything you do often.
-- Undo/redo with sensible grouping, even though this GTK build ships without
-  `GtkTextBuffer` undo.
+  task lists, links, images, tables, code blocks and horizontal rules. The
+  toolbar uses native SF Symbols, so it sits comfortably beside the rest of
+  macOS.
+- Keyboard shortcuts for everything you do often, using the standard macOS
+  Command and Control conventions.
+- Undo/redo with sensible grouping.
 - Open, save, save-as and export to a standalone HTML file.
 - Drag a `.md` file onto the window to open it.
 - Automatic light/dark appearance for the whole window and preview, following
-  the desktop colour scheme.
-- Responsive layout: the toolbar stays on one line, tabs scroll when needed,
-  and the editor/preview split stays proportional as the window resizes.
+  the macOS appearance setting.
+- Responsive layout: the toolbar collapses into an overflow menu when the
+  window is narrow, tabs scroll when needed, and the editor/preview split stays
+  proportional as the window resizes.
 - Scroll position is mirrored from the editor to the preview.
 - Word, character and line counts, plus cursor position.
 
 ## Requirements
 
-Everything is already installed on a standard Ubuntu 26.04 desktop:
-
-```bash
-python3-gi gir1.2-gtk-3.0 gir1.2-handy-1 gir1.2-webkit2-4.1 \
-python3-markdown-it python3-pygments
-```
-
-Check with:
-
-```bash
-python3 -c "import gi, markdown_it, pygments; gi.require_version('Gtk','3.0'); \
-gi.require_version('WebKit2','4.1'); print('ready')"
-```
+- macOS 14 or later (Apple silicon or Intel).
+- Nothing else. The app bundle carries its own Python and Qt runtime, so it does
+  not install Homebrew packages, Python packages, or anything else into the
+  system.
 
 ## Install
 
@@ -54,78 +49,93 @@ gi.require_version('WebKit2','4.1'); print('ready')"
 ./install.sh
 ```
 
-This copies the app to `~/.local/opt/markdown-studio`, adds a
-`markdown-studio` launcher in `~/.local/bin`, and installs a desktop entry and
-icon, so the app also shows up in the GNOME application grid. It also makes
-Markdown Studio the explicit default handler for `text/markdown`, so a later
-editor install cannot silently take over the association.
+This builds `dist/Markdown Studio.app` if needed, copies it to
+`~/Applications/Markdown Studio.app`, registers it with Launch Services, and
+adds a small `markdown-studio` command in `~/.local/bin` (add that folder to
+your `PATH` if you want the command everywhere).
+
+To make Markdown Studio the default Markdown editor, select a `.md` file in
+Finder, choose **File → Get Info**, pick **Markdown Studio** under **Open
+with**, then click **Change All**.
 
 ## Uninstall
 
 ```bash
-./uninstall.sh
+./uninstall.sh            # remove the app and command
+./uninstall.sh --purge    # also remove preferences, caches and session data
 ```
-
-This removes the launcher, app directory, desktop entry and icon. If Markdown
-Studio is still the default `text/markdown` handler, the uninstaller also drops
-that association.
 
 ## Run
 
 ```bash
-markdown-studio                 # start with the welcome document
-markdown-studio notes.md        # open a file
-markdown-studio a.md b.md       # open several files in tabs
-python3 app.py notes.md         # run without installing
+open -a "$HOME/Applications/Markdown Studio.app"   # welcome document
+markdown-studio notes.md                           # open a file
+markdown-studio a.md b.md                          # several files in tabs
+open "dist/Markdown Studio.app"                    # run the built bundle directly
 ```
 
 ## Shortcuts
 
 | Action | Shortcut |
 | --- | --- |
-| New / Open / Save / Save As | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
-| Close file | `Ctrl+W` |
-| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| Export as HTML | `Ctrl+Shift+E` |
-| Check spelling & grammar | `Ctrl+Shift+G` |
-| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
-| Bold / Italic / Strikethrough | `Ctrl+B` / `Ctrl+I` / `Ctrl+Shift+X` |
-| Inline code / Code block | `Ctrl+E` / `Ctrl+Shift+C` |
-| Link / Image | `Ctrl+K` / `Ctrl+Shift+I` |
-| Heading 1 / 2 / 3 | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
-| Bulleted / Numbered / Task list | `Ctrl+Shift+8` / `Ctrl+Shift+7` (task via toolbar) |
-| Block quote | `Ctrl+Shift+9` |
-| Toggle preview | `Ctrl+Shift+P` |
-| Fullscreen | `F11` |
-| Quit | `Ctrl+Q` |
+| New / Open / Save / Save As | `⌘N` / `⌘O` / `⌘S` / `⇧⌘S` |
+| Close tab | `⌘W` |
+| Next / previous tab | `⌃⇥` / `⌃⇧⇥` |
+| Export as HTML | `⇧⌘E` |
+| Check spelling & grammar | `⇧⌘G` |
+| Undo / Redo | `⌘Z` / `⇧⌘Z` |
+| Bold / Italic / Strikethrough | `⌘B` / `⌘I` / `⇧⌘X` |
+| Inline code / Code block | `⌘E` / `⇧⌘C` |
+| Link / Image | `⌘K` / `⇧⌘I` |
+| Heading 1 / 2 / 3 | `⌘1` / `⌘2` / `⌘3` |
+| Bulleted / Numbered / Task list | `⇧⌘8` / `⇧⌘7` (task via toolbar) |
+| Block quote | `⇧⌘9` |
+| Toggle preview | `⇧⌘P` |
+| Full screen | `⌃⌘F` or `F11` |
+| Quit | `⌘Q` |
 
 ## Notes
 
 - Raw HTML in a document is escaped, not executed.
-- Clicking a `http(s)` link opens it in your browser; clicking a link to a local
+- Clicking an `http(s)` link opens it in your browser; clicking a link to a local
   Markdown file opens that file in the editor.
 - Relative image paths resolve against the document's folder.
-- The preview is rendered by WebKitGTK with a small GitHub-flavoured stylesheet;
-  code blocks are highlighted by Pygments.
+- The preview is rendered by Qt WebEngine with a small GitHub-flavoured
+  stylesheet; code blocks are highlighted by Pygments.
 - Saves are atomic: the document is written to a temporary file and renamed
   into place, so a crash or power loss cannot leave a truncated file.
 - Named files are auto-saved after a short pause in typing. Untitled documents
   still ask where to save when you close them.
 - Spelling and grammar checks send the document text to
-  `api.languagetool.org` only when you run the check. QuillBot's API requires a
-  paid account, so LanguageTool is used instead. Set
+  `api.languagetool.org` only when you run the check. Set
   `MARKDOWN_STUDIO_GRAMMAR_URL` and `MARKDOWN_STUDIO_GRAMMAR_LANGUAGE` to use a
   self-hosted LanguageTool server or another language.
-- Light/dark mode follows `org.gnome.desktop.interface color-scheme` and
-  `gtk-theme` live, so switching the desktop appearance updates the app
-  immediately.
+- Light/dark mode follows the macOS appearance, and the preview and editor
+  update with it immediately.
+- The app is self-contained. Its runtime lives inside
+  `Markdown Studio.app/Contents/Resources/runtime`; deleting the app removes
+  all of it.
+
+## Building
+
+```bash
+./build_macos.sh
+```
+
+The build script downloads a standalone CPython runtime into `.build/`, installs
+the Python wheels into that private runtime, copies what the app needs into
+`dist/Markdown Studio.app`, and trims the Qt modules the editor does not use.
+Nothing is installed system-wide. `install.sh` calls this automatically.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `app.py` | the whole application |
-| `markdown-studio.svg` | application icon |
-| `markdown-studio.desktop` | desktop entry template |
+| `markdown-studio.svg` | application icon source |
+| `assets/toolbar/` | SF Symbol toolbar icons |
+| `assets/generate-icons.js` | regenerates the toolbar icons on macOS |
+| `requirements.txt` | pinned Python dependencies for the private runtime |
+| `build_macos.sh` | builds the self-contained `.app` |
 | `install.sh` | per-user installer |
 | `uninstall.sh` | per-user uninstaller |
